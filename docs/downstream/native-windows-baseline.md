@@ -284,7 +284,32 @@ Worker console note: with redirected output on a non-UTF-8 Windows console, the 
 
 Second downstream screen (Milestone 5): `SourceListScreen` under `frontend/src/custom/screens/sources/` moves the sources composition verbatim (fetch/sort/infinite scroll/keyboard nav/delete flow) onto custom theme tokens; route page is a thin adapter. Full frontend suite 180/180, production build clean. The locale unused-key test needed its timeout raised 30s→60s (parallel-run filesystem scan exceeded 30s twice; root cause, not a key regression).
 
+## Production cutover (Milestone 6, executed 2026-09-20)
+
+Before-cutover inventory: repository `./data` absent; no `notebook_data/` or `surreal-data/`; no legacy populated store anywhere. `E:\Maintenance_Ai_Agent_Data\` held the Milestone 5 initialized store (RocksDB v25, empty notebooks; empty `checkpoints.sqlite`; empty `uploads/`, `podcasts/`, `tiktoken-cache/`). Nothing required moving; the separate `E:\Maintenance AI Agent` tree is an unrelated project and was not touched.
+
+Backup: full hash-verified copy (11 files, 56936 bytes, SHA256-identical, readable) at `E:\Maintenance_Ai_Agent_Data_backup_20260920` (outside the repository, untracked by Git). No originals modified during backup.
+
+Production configuration (process-local, `.env` unchanged, no secrets added):
+
+```powershell
+$env:OPEN_NOTEBOOK_DATA_DIR = 'E:\Maintenance_Ai_Agent_Data'  # API and worker, before start
+surreal start --bind 127.0.0.1:8000 --user <SURREAL_USER> --pass <SURREAL_PASSWORD> "rocksdb:E:\Maintenance_Ai_Agent_Data\surrealdb"
+uv run --env-file .env run_api.py                              # 127.0.0.1:5055
+uv run --env-file .env surreal-commands-worker --import-modules commands --max-tasks 5
+```
+
+Validation (non-destructive; read-only plus restart): Surreal `/health` 200; API `/health` healthy and `/openapi.json` 200; migrations no-op (`Database is already at the latest version`); notebook read count 0; `checkpoints.sqlite` accessible; no repo `./data`; worker live listener confirmed; frontend `npm run dev` served `/` 200 (Next 16.3.4, 913ms); API/worker restart preserves state; ports 8000/5055/3000 verified closed, no stray processes. (Start the worker/frontend via `cmd /c` when capturing output; bare `Start-Process npm` fails with `%1 is not a valid Win32 application`.)
+
+Rollback (documented, not executed): stop frontend/API/worker/SurrealDB; optionally restore `E:\Maintenance_Ai_Agent_Data` from `E:\Maintenance_Ai_Agent_Data_backup_20260920`; to return to repository-relative storage, unset `OPEN_NOTEBOOK_DATA_DIR` and restart (falls back to `./data`); verify with `GET /health` and notebook read. SurrealDB data is only ever touched through its own start/export procedure, never plain file moves while running.
+
+Limitations: production store holds no user content yet (first real uploads will prove the write path); worker load, visual review, and `.env` BOM re-save remain open.
+
 ## Remaining blockers and next step
+
+1. Keep SurrealDB 2.6.5 pinned as the native runtime; do not start UI work on SurrealDB 3.2.4.
+2. Production cutover executed and validated; first real user content still pending.
+3. Worker queue processing under real load and visual UI review belong to later milestones.
 
 1. Keep SurrealDB 2.6.5 pinned as the native runtime; do not start UI work on SurrealDB 3.2.4.
 2. Operator cutover to `E:\Maintenance_Ai_Agent_Data` validated; production start follows the procedure above.
