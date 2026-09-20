@@ -96,7 +96,7 @@ export function ContentSelectionPanel({
       <div className="rounded-lg border bg-muted/30">
         {isLoading ? (
           <div className="flex items-center justify-center py-16 text-sm text-muted-foreground">
-            <Loader2 className="mr-2 h-4 w-4 animate-spin" /> {t('podcasts.loadingNotebooks')}
+            <Loader2 className="me-2 h-4 w-4 animate-spin" /> {t('podcasts.loadingNotebooks')}
           </div>
         ) : notebooks.length === 0 ? (
           <div className="p-6 text-sm text-muted-foreground">

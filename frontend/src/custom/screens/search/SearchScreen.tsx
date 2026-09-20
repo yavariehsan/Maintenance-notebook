@@ -251,7 +251,7 @@ export function SearchScreen() {
                           disabled={ask.isStreaming}
                           className="h-auto py-1 px-2"
                         >
-                          <Settings className="h-3 w-3 mr-1" />
+                          <Settings className="h-3 w-3 me-1" />
                           {t('searchPage.advanced')}
                         </Button>
                       </div>
@@ -276,7 +276,7 @@ export function SearchScreen() {
                       >
                         {ask.isStreaming ? (
                           <>
-                            <LoadingSpinner size="sm" className="mr-2" />
+                            <LoadingSpinner size="sm" className="me-2" />
                             {t('searchPage.processing')}
                           </>
                         ) : (
@@ -290,7 +290,7 @@ export function SearchScreen() {
                           onClick={() => setShowSaveDialog(true)}
                           className="w-full"
                         >
-                          <Save className="h-4 w-4 mr-2" />
+                          <Save className="h-4 w-4 me-2" />
                           {t('searchPage.saveToNotebooks')}
                         </Button>
                       )}
@@ -367,7 +367,7 @@ export function SearchScreen() {
                       {searchMutation.isPending ? (
                         <LoadingSpinner size="sm" />
                       ) : (
-                        <Search className="h-4 w-4 mr-2" />
+                        <Search className="h-4 w-4 me-2" />
                       )}
                       {t('searchPage.search')}
                     </Button>
@@ -474,7 +474,7 @@ export function SearchScreen() {
                         disabled={!searchQuery.trim() || searchMutation.isPending}
                         className="shrink-0"
                       >
-                        <RefreshCw className="h-4 w-4 mr-2" />
+                        <RefreshCw className="h-4 w-4 me-2" />
                         {t('common.refresh')}
                       </Button>
                     </AlertDescription>
@@ -514,7 +514,7 @@ export function SearchScreen() {
                                   >
                                     {result.title}
                                   </button>
-                                  <Badge variant="secondary" className="ml-2 font-mono text-[11px]">
+                                  <Badge variant="secondary" className="ms-2 font-mono text-[11px]">
                                     {result.final_score.toFixed(2)}
                                   </Badge>
                                 </div>
@@ -528,7 +528,7 @@ export function SearchScreen() {
                                   </CollapsibleTrigger>
                                   <CollapsibleContent className="mt-2 space-y-1">
                                     {result.matches.map((match, i) => (
-                                      <div key={i} className="text-sm pl-6 py-1 border-l-2 border-muted">
+                                      <div key={i} className="text-sm ps-6 py-1 border-s-2 border-muted">
                                         {match}
                                       </div>
                                     ))}

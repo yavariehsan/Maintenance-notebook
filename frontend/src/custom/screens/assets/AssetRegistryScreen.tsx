@@ -76,7 +76,7 @@ export function AssetRegistryScreen() {
               onClick={() => refetch()}
               className="shrink-0"
             >
-              <RefreshCw className="h-4 w-4 mr-2" />
+              <RefreshCw className="h-4 w-4 me-2" />
               {t('common.refresh')}
             </Button>
           </AlertDescription>
@@ -92,7 +92,7 @@ export function AssetRegistryScreen() {
           description={t('assets.emptyDescription')}
           action={
             <Button onClick={openCreate} variant="outline" className="mt-4">
-              <Plus className="h-4 w-4 mr-2" />
+              <Plus className="h-4 w-4 me-2" />
               {t('assets.newAsset')}
             </Button>
           }
@@ -193,7 +193,7 @@ export function AssetRegistryScreen() {
             </div>
             {assets && assets.length > 0 && (
               <Button onClick={openCreate}>
-                <Plus className="h-4 w-4 mr-2" />
+                <Plus className="h-4 w-4 me-2" />
                 {t('assets.newAsset')}
               </Button>
             )}

@@ -1,9 +1,21 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, beforeAll, vi } from 'vitest'
 import { render, screen, act, waitFor } from '@testing-library/react'
 import { I18nProvider } from './I18nProvider'
 import i18n from '@/lib/i18n'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 
 describe('I18nProvider document direction', () => {
+  beforeAll(() => {
+    // jsdom does not implement scrollIntoView (used by Radix Select).
+    Element.prototype.scrollIntoView = vi.fn()
+  })
+
   beforeEach(() => {
     window.localStorage.clear()
     document.documentElement.lang = 'en'
@@ -59,5 +71,31 @@ describe('I18nProvider document direction', () => {
     window.localStorage.setItem('i18nextLng', 'de-DE')
     await import('@/lib/i18n')
     expect(window.localStorage.getItem('i18nextLng')).toBe('en')
+  })
+
+  it('propagates locale direction into Radix primitives (no LTR islands)', async () => {
+    render(
+      <I18nProvider>
+        <Select defaultOpen value="a">
+          <SelectTrigger>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="a">Alpha</SelectItem>
+          </SelectContent>
+        </Select>
+      </I18nProvider>,
+    )
+    await waitFor(() => expect(screen.getByRole('listbox')).toBeDefined())
+
+    // English: Radix content follows the locale (ltr here, not a hard-coded island).
+    expect(document.querySelector('[role="listbox"]')?.closest('[dir="ltr"]')).not.toBeNull()
+
+    await act(async () => {
+      await i18n.changeLanguage('fa')
+    })
+    expect(
+      document.querySelector('[role="listbox"]')?.closest('[dir="rtl"]'),
+    ).not.toBeNull()
   })
 })

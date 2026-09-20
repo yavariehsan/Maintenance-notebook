@@ -107,12 +107,12 @@ export function TransformationPlayground({ transformations, selectedTransformati
             >
               {executeTransformation.isPending ? (
                 <>
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  <Loader2 className="h-4 w-4 me-2 animate-spin" />
                   {t('transformations.running')}
                 </>
               ) : (
                 <>
-                  <Play className="h-4 w-4 mr-2" />
+                  <Play className="h-4 w-4 me-2" />
                   {t('transformations.runTest')}
                 </>
               )}

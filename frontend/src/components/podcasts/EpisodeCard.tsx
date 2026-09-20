@@ -244,7 +244,7 @@ export function EpisodeCard({ episode, onDelete, deleting, onRetry, retrying }: 
             <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
               <DialogTrigger asChild>
                 <Button variant="outline" size="sm">
-                  <InfoIcon className="mr-2 h-4 w-4" /> {t('podcasts.details')}
+                  <InfoIcon className="me-2 h-4 w-4" /> {t('podcasts.details')}
                 </Button>
               </DialogTrigger>
               <DialogContent className="w-[min(90vw,720px)] max-h-[85vh] overflow-hidden">
@@ -401,14 +401,14 @@ export function EpisodeCard({ episode, onDelete, deleting, onRetry, retrying }: 
                 onClick={handleRetry}
                 disabled={retrying}
               >
-                <RefreshCcw className={cn('mr-2 h-4 w-4', retrying && 'animate-spin')} />
+                <RefreshCcw className={cn('me-2 h-4 w-4', retrying && 'animate-spin')} />
                 {retrying ? t('podcasts.retrying') : t('podcasts.retry')}
               </Button>
             ) : null}
             <AlertDialog>
               <AlertDialogTrigger asChild>
                 <Button variant="ghost" size="sm" className="text-destructive">
-                  <Trash2 className="mr-2 h-4 w-4" />
+                  <Trash2 className="me-2 h-4 w-4" />
                   {t('podcasts.delete')}
                 </Button>
               </AlertDialogTrigger>

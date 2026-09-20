@@ -95,7 +95,7 @@ export function CustomSidebar() {
       >
         <div
           className={cn(
-            'flex h-16 items-center group',
+            'flex h-16 shrink-0 items-center group',
             isCollapsed ? 'justify-center px-2' : 'justify-between px-4'
           )}
         >
@@ -132,9 +132,12 @@ export function CustomSidebar() {
           )}
         </div>
 
+        {/* Scrollable navigation region: min-h-0 lets it shrink inside the
+            fixed-height sidebar so long menus scroll instead of pushing the
+            footer (theme/language/logout) below the viewport. */}
         <nav
           className={cn(
-            'flex-1 space-y-1 py-4',
+            'flex-1 min-h-0 overflow-y-auto space-y-1 py-4',
             isCollapsed ? 'px-2' : 'px-3'
           )}
         >
@@ -268,9 +271,10 @@ export function CustomSidebar() {
           ))}
         </nav>
 
+        {/* Footer stays pinned: shrink-0 keeps actions reachable at any height. */}
         <div
           className={cn(
-            'border-t border-[var(--custom-sidebar-border)] p-3 space-y-2',
+            'shrink-0 border-t border-[var(--custom-sidebar-border)] p-3 space-y-2',
             isCollapsed && 'px-2'
           )}
         >

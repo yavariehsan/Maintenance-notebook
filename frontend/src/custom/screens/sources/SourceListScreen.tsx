@@ -241,7 +241,7 @@ export function SourceListScreen() {
       >
         {label}
         <SortIcon className={cn(
-          "ml-2 h-3 w-3",
+          "ms-2 h-3 w-3",
           active ? 'opacity-100' : 'opacity-30'
         )} />
       </Button>
@@ -313,7 +313,7 @@ export function SourceListScreen() {
             description={t('sources.allSourcesDescShort')}
             action={
               <Button onClick={() => setSourceDialogOpen(true)} variant="outline" className="mt-4">
-                <Plus className="h-4 w-4 mr-2" />
+                <Plus className="h-4 w-4 me-2" />
                 {t('sources.newSource')}
               </Button>
             }
@@ -451,7 +451,7 @@ export function SourceListScreen() {
                   <td colSpan={7} className="h-16 text-center">
                     <div className="flex items-center justify-center">
                       <LoadingSpinner />
-                      <span className="ml-2 text-muted-foreground">{t('sources.loadingMore')}</span>
+                      <span className="ms-2 text-muted-foreground">{t('sources.loadingMore')}</span>
                     </div>
                   </td>
                 </tr>

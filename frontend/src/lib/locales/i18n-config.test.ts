@@ -9,6 +9,8 @@ import {
   FALLBACK_LANGUAGE,
   SUPPORTED_LANGUAGES,
 } from './index'
+import { en } from './en'
+import { fa } from './fa'
 
 describe('Supported locales', () => {
   it('exposes exactly en and fa resources', () => {
@@ -74,8 +76,7 @@ describe('Language direction', () => {
   })
 })
 
-describe('normalizeLanguage', () => {
-  it('keeps supported codes', () => {
+describe('normalizeLanguage', () => {  it('keeps supported codes', () => {
     expect(normalizeLanguage('en')).toBe('en')
     expect(normalizeLanguage('fa')).toBe('fa')
   })
@@ -95,5 +96,43 @@ describe('normalizeLanguage', () => {
     expect(normalizeLanguage(null)).toBe('en')
     expect(normalizeLanguage(undefined)).toBe('en')
     expect(normalizeLanguage('')).toBe('en')
+  })
+})
+
+const BRAND = 'Maintenance AI Agent'
+
+const collectLeaves = (obj: Record<string, unknown>): string[] => {
+  const out: string[] = []
+  for (const val of Object.values(obj)) {
+    if (typeof val === 'string') out.push(val)
+    else if (typeof val === 'object' && val !== null && !Array.isArray(val)) {
+      out.push(...collectLeaves(val as Record<string, unknown>))
+    }
+  }
+  return out
+}
+
+describe('Product branding', () => {
+  it('brands the app as Maintenance AI Agent in English', () => {
+    expect(en.common.appName).toBe(BRAND)
+    expect(en.auth.loginTitle).toBe(BRAND)
+  })
+
+  it('brands the app as Maintenance AI Agent in Persian', () => {
+    expect(fa.common.appName).toBe(BRAND)
+    expect(fa.auth.loginTitle).toBe(BRAND)
+    expect(fa.connectionErrors.docLink).toContain(BRAND)
+  })
+
+  it('contains no legacy Open Notebook user-visible strings', () => {
+    for (const [code, locale] of [
+      ['en', en],
+      ['fa', fa],
+    ] as const) {
+      const hits = collectLeaves(locale as unknown as Record<string, unknown>).filter(
+        (v) => v.includes('Open Notebook'),
+      )
+      expect(hits, `Legacy branding in ${code}: ${hits.join(' | ')}`).toEqual([])
+    }
   })
 })

@@ -53,3 +53,21 @@
   --custom-radius: var(--radius);
   --custom-shadow-lift: var(--shadow-lift);
 }
+
+/* ============================================================================
+   LOCALE-SPECIFIC TYPOGRAPHY
+
+   English keeps the existing font stack untouched. When Persian is active
+   (<html lang="fa">, set by I18nProvider), prose and display type switch to
+   the Persian-capable Vazirmatn stack. Monospace stays as-is so Latin/code
+   content keeps its existing rendering in both locales.
+   Unlayered rules win over Tailwind's layered utilities by cascade order.
+   ========================================================================== */
+
+html[lang="fa"] body {
+  font-family: var(--font-vazirmatn), "Segoe UI", Tahoma, ui-sans-serif, system-ui, sans-serif;
+}
+
+html[lang="fa"] .font-display {
+  font-family: var(--font-vazirmatn), "Segoe UI", Tahoma, ui-sans-serif, system-ui, sans-serif;
+}

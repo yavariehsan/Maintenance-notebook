@@ -47,7 +47,7 @@ export function SetupBanner() {
               className="inline-flex items-center shrink-0 text-sm font-medium underline underline-offset-2 hover:text-destructive/80"
             >
               {t('setupBanner.viewDocs')}
-              <ExternalLink className="ml-1 h-3 w-3" />
+              <ExternalLink className="ms-1 h-3 w-3" />
             </a>
           </AlertDescription>
         </Alert>

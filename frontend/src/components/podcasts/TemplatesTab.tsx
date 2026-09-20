@@ -55,7 +55,7 @@ export function TemplatesTab() {
 
               <div className="space-y-2">
                 <h4 className="font-medium text-foreground">{t('podcasts.episodeProfilesSetFormat')}</h4>
-                <ul className="list-disc space-y-1 pl-5">
+                <ul className="list-disc space-y-1 ps-5">
                   <li>{t('podcasts.episodeProfilesList1')}</li>
                   <li>{t('podcasts.episodeProfilesList2')}</li>
                   <li>{t('podcasts.episodeProfilesList3')}</li>
@@ -64,7 +64,7 @@ export function TemplatesTab() {
 
               <div className="space-y-2">
                 <h4 className="font-medium text-foreground">{t('podcasts.speakerProfilesBringVoices')}</h4>
-                <ul className="list-disc space-y-1 pl-5">
+                <ul className="list-disc space-y-1 ps-5">
                   <li>{t('podcasts.speakerProfilesList1')}</li>
                   <li>{t('podcasts.speakerProfilesList2')}</li>
                   <li>{t('podcasts.speakerProfilesList3')}</li>
@@ -73,7 +73,7 @@ export function TemplatesTab() {
 
               <div className="space-y-2">
                 <h4 className="font-medium text-foreground">{t('podcasts.recommendedWorkflow')}</h4>
-                <ol className="list-decimal space-y-1 pl-5">
+                <ol className="list-decimal space-y-1 ps-5">
                   <li>{t('podcasts.workflowStep1')}</li>
                   <li>{t('podcasts.workflowStep2')}</li>
                   <li>{t('podcasts.workflowStep3')}</li>

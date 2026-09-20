@@ -68,7 +68,7 @@ export function NotebookListScreen() {
               description={t('common.refreshPage')}
               action={
                 <Button onClick={() => refetch()} variant="outline" className="mt-4">
-                  <RefreshCw className="h-4 w-4 mr-2" />
+                  <RefreshCw className="h-4 w-4 me-2" />
                   {t('common.refresh')}
                 </Button>
               }
@@ -124,7 +124,7 @@ export function NotebookListScreen() {
               className="w-full sm:w-64"
             />
             <Button onClick={() => setCreateDialogOpen(true)}>
-              <Plus className="h-4 w-4 mr-2" />
+              <Plus className="h-4 w-4 me-2" />
               {t('notebooks.newNotebook')}
             </Button>
           </div>

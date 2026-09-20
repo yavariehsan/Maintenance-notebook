@@ -43,8 +43,24 @@ describe('CustomSidebar direction', () => {
     ).toBeNull()
   })
 
-  it('keeps navigation and actions functional in both directions', () => {
+  it('keeps the nav region scrollable and the footer pinned in both directions', () => {
     for (const lang of ['en', 'fa']) {
+      setTestLanguage(lang)
+      const { container, unmount } = render(<CustomSidebar />)
+      // Root cause of clipped Sign Out: nav must shrink inside the fixed
+      // sidebar height and scroll instead of pushing the footer out.
+      const nav = container.querySelector('nav')
+      expect(nav?.className).toContain('min-h-0')
+      expect(nav?.className).toContain('overflow-y-auto')
+      // Footer (theme/language/logout) must stay reachable at any height.
+      const signOut = container.querySelector('[aria-label="common.signOut"]')
+      const footer = signOut?.closest('div')
+      expect(footer?.className).toContain('shrink-0')
+      unmount()
+    }
+  })
+
+  it('keeps navigation and actions functional in both directions', () => {    for (const lang of ['en', 'fa']) {
       setTestLanguage(lang)
       const { container, unmount } = render(<CustomSidebar />)
       // Nav links, create menu trigger, and logout are all present.
