@@ -1,0 +1,55 @@
+/* ============================================================================
+   DOWNSTREAM PRESENTATION TOKENS (Maintenance Notebook)
+
+   Isolated semantic layer for downstream-owned UI. Light values live in
+   :root and dark values under `.dark`, following the existing document-root
+   convention from app/globals.css. Values alias the upstream raw palette so
+   both modes track the design system; diverge a token here (not in
+   components) when downstream needs its own treatment.
+
+   Custom components consume these via var(), e.g.
+   className="bg-[var(--custom-page)] text-[var(--custom-foreground)]".
+   Never duplicate upstream globals.css here.
+   ========================================================================== */
+
+:root {
+  --custom-page: var(--bg);
+  --custom-surface: var(--surface);
+  --custom-surface-raised: var(--surface-raised);
+  --custom-foreground: var(--ink);
+  --custom-muted-foreground: var(--ink-soft);
+  --custom-faint-foreground: var(--ink-faint);
+  --custom-border: var(--line);
+  --custom-border-soft: var(--line-soft);
+  --custom-primary: var(--primary);
+  --custom-primary-hover: var(--primary-hover);
+  --custom-on-primary: var(--on-primary);
+  --custom-sidebar: var(--sidebar);
+  --custom-sidebar-foreground: var(--sidebar-foreground);
+  --custom-sidebar-border: var(--sidebar-border);
+  --custom-sidebar-accent: var(--sidebar-accent);
+  --custom-ring: var(--ring);
+  --custom-radius: var(--radius);
+  --custom-shadow-lift: var(--shadow-lift);
+}
+
+.dark {
+  --custom-page: var(--bg);
+  --custom-surface: var(--surface);
+  --custom-surface-raised: var(--surface-raised);
+  --custom-foreground: var(--ink);
+  --custom-muted-foreground: var(--ink-soft);
+  --custom-faint-foreground: var(--ink-faint);
+  --custom-border: var(--line);
+  --custom-border-soft: var(--line-soft);
+  --custom-primary: var(--primary);
+  --custom-primary-hover: var(--primary-hover);
+  --custom-on-primary: var(--on-primary);
+  --custom-sidebar: var(--sidebar);
+  --custom-sidebar-foreground: var(--sidebar-foreground);
+  --custom-sidebar-border: var(--sidebar-border);
+  --custom-sidebar-accent: var(--sidebar-accent);
+  --custom-ring: var(--ring);
+  --custom-radius: var(--radius);
+  --custom-shadow-lift: var(--shadow-lift);
+}

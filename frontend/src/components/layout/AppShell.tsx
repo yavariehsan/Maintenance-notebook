@@ -1,20 +1,12 @@
 'use client'
 
-import { AppSidebar } from './AppSidebar'
-import { SetupBanner } from './SetupBanner'
+import { CustomShell } from '@/custom/layout/CustomShell'
 
 interface AppShellProps {
   children: React.ReactNode
 }
 
+// Routing boundary stays here; presentation lives in CustomShell.
 export function AppShell({ children }: AppShellProps) {
-  return (
-    <div className="flex h-screen overflow-hidden">
-      <AppSidebar />
-      <main className="flex-1 flex flex-col min-h-0 overflow-hidden">
-        <SetupBanner />
-        {children}
-      </main>
-    </div>
-  )
+  return <CustomShell>{children}</CustomShell>
 }

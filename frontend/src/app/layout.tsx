@@ -5,6 +5,7 @@ import {
   Spline_Sans_Mono,
 } from "next/font/google";
 import "./globals.css";
+import "@/custom/theme/tokens.css";
 import "katex/dist/katex.min.css";
 import { Toaster } from "@/components/ui/sonner";
 import { QueryProvider } from "@/components/providers/QueryProvider";
