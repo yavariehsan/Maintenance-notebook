@@ -2,6 +2,7 @@ import type { LucideIcon } from 'lucide-react'
 import {
   Book,
   Bot,
+  Cog,
   FileText,
   Mic,
   Search,
@@ -30,6 +31,7 @@ export const customNavigation: CustomNavigationSection[] = [
     key: 'navigation.collect',
     items: [
       { key: 'navigation.sources', href: '/sources', icon: FileText, accentClass: 'text-sage' },
+      { key: 'navigation.assets', href: '/assets', icon: Cog, accentClass: 'text-gold' },
     ],
   },
   {

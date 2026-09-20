@@ -71,8 +71,8 @@ Status: foundation for product work. Nothing in sections 7–8 is implemented.
 | AI assistance | ask streaming, source/notebook chat | Direct reuse |
 | Shift-handover briefings | podcast TTS episodes | Repurpose |
 | Maintenance records/incidents | notes (timestamped, notebook-scoped) | Adapt; failure taxonomy is new |
-| Equipment/assets | notebooks (collections) or sources | New registry concept; host TBD |
-| Work orders/tasks | none (job pipeline is infra-only) | New downstream concept |
+| Equipment/assets | notebooks (collections) or sources | Implemented: first-class `asset` table (migration 26) with name, type, status, location, manufacturer, model, serial; registry screen under Collect; no relations yet |
+| Work orders/tasks | none (job pipeline is infra-only) | New downstream concept (deferred) |
 | Equipment status/health | status badges, capability probes | New concept; pattern exists |
 | Audit/history | recently-viewed, checkpoints, job history | Reuse + extend |
 | Roles/permissions | single-password auth only | Gap; backend limitation |
@@ -82,7 +82,7 @@ Status: foundation for product work. Nothing in sections 7–8 is implemented.
 - Notebooks list → equipment fleets/systems; sources → manuals library;
   search → incident/knowledge lookup; podcasts → handover briefings;
   settings/models → provider config (unchanged); transformations → report
-  templates. New: asset registry, work orders, health overview.
+  templates. New: asset-source/note links, work orders, health overview.
 
 ## 9. Explicit non-goals
 

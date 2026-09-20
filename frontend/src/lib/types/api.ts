@@ -9,6 +9,42 @@ export interface NotebookResponse {
   note_count: number
 }
 
+export interface AssetResponse {
+  id: string
+  name: string
+  description: string
+  asset_type: string | null
+  status: string
+  location: string | null
+  manufacturer: string | null
+  model: string | null
+  serial_number: string | null
+  created: string
+  updated: string
+}
+
+export interface CreateAssetRequest {
+  name: string
+  description?: string
+  asset_type?: string | null
+  status?: string | null
+  location?: string | null
+  manufacturer?: string | null
+  model?: string | null
+  serial_number?: string | null
+}
+
+export interface UpdateAssetRequest {
+  name?: string
+  description?: string
+  asset_type?: string | null
+  status?: string | null
+  location?: string | null
+  manufacturer?: string | null
+  model?: string | null
+  serial_number?: string | null
+}
+
 export interface NoteResponse {
   id: string
   title: string | null

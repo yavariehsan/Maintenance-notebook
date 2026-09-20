@@ -28,6 +28,47 @@ class NotebookResponse(BaseModel):
     note_count: int
 
 
+# Asset models (Maintenance Agent registry, migration 26)
+class AssetCreate(BaseModel):
+    name: str = Field(..., description="Name of the asset")
+    description: str = Field(default="", description="Description of the asset")
+    asset_type: Optional[str] = Field(None, description="Asset type/category")
+    status: Optional[str] = Field(default="active", description="Operational status")
+    location: Optional[str] = Field(None, description="Asset location")
+    manufacturer: Optional[str] = Field(None, description="Manufacturer")
+    model: Optional[str] = Field(None, description="Model designation")
+    serial_number: Optional[str] = Field(None, description="Serial number")
+
+
+class AssetUpdate(BaseModel):
+    name: Optional[str] = Field(None, description="Name of the asset")
+    description: Optional[str] = Field(None, description="Description of the asset")
+    asset_type: Optional[str] = Field(None, description="Asset type/category")
+    status: Optional[str] = Field(None, description="Operational status")
+    location: Optional[str] = Field(None, description="Asset location")
+    manufacturer: Optional[str] = Field(None, description="Manufacturer")
+    model: Optional[str] = Field(None, description="Model designation")
+    serial_number: Optional[str] = Field(None, description="Serial number")
+
+
+class AssetResponse(BaseModel):
+    id: str
+    name: str
+    description: str
+    asset_type: Optional[str] = None
+    status: str
+    location: Optional[str] = None
+    manufacturer: Optional[str] = None
+    model: Optional[str] = None
+    serial_number: Optional[str] = None
+    created: str
+    updated: str
+
+
+class AssetDeleteResponse(BaseModel):
+    message: str
+
+
 class RecentlyViewedResponse(BaseModel):
     type: Literal["notebook", "source"]
     id: str

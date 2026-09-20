@@ -1,0 +1,18 @@
+-- Migration 26: Create asset table for the Maintenance Agent Asset Registry
+-- First-class equipment/asset records (name, classification, status,
+-- location, identity). No relations yet; asset knowledge links are deferred.
+
+DEFINE TABLE asset SCHEMAFULL;
+DEFINE FIELD name ON asset TYPE string;
+DEFINE FIELD description ON asset TYPE option<string>;
+DEFINE FIELD asset_type ON asset TYPE option<string>;
+DEFINE FIELD status ON asset TYPE option<string> DEFAULT "active";
+DEFINE FIELD location ON asset TYPE option<string>;
+DEFINE FIELD manufacturer ON asset TYPE option<string>;
+DEFINE FIELD model ON asset TYPE option<string>;
+DEFINE FIELD serial_number ON asset TYPE option<string>;
+DEFINE FIELD created ON asset TYPE option<datetime> DEFAULT time::now();
+DEFINE FIELD updated ON asset TYPE option<datetime> DEFAULT time::now();
+
+-- Index for fast status lookups (future health/overview filtering)
+DEFINE INDEX idx_asset_status ON asset FIELDS status;

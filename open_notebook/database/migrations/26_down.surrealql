@@ -1,0 +1,4 @@
+-- Rollback Migration 26: Remove asset table
+
+REMOVE INDEX idx_asset_status ON asset;
+REMOVE TABLE asset;

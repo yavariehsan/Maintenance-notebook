@@ -29,6 +29,7 @@ describe('resolveActiveHref', () => {
     const hrefs = customNavigation.map((section) => section.items.map((item) => item.href)).flat()
     expect(hrefs).toEqual([
       '/sources',
+      '/assets',
       '/notebooks',
       '/search',
       '/podcasts',
