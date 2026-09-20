@@ -305,6 +305,10 @@ Rollback (documented, not executed): stop frontend/API/worker/SurrealDB; optiona
 
 Limitations: production store holds no user content yet (first real uploads will prove the write path); worker load, visual review, and `.env` BOM re-save remain open.
 
+## Presentation layer (Milestones 4–7)
+
+Downstream boundary `frontend/src/custom/` (theme tokens, `CustomShell`/`CustomSidebar`, centralized `navigation.ts`) with thin route adapters; upstream hooks, API clients, stores, providers, and primitives reused. Screens migrated: notebooks (M4), sources (M5), search incl. ask tab with SSE streaming preserved (M7; downstream adds a search error panel with retry). Validation per milestone: lint 0 errors, full vitest suite green (187 tests, 34 files), production build clean with all routes emitted. The locale unused-key test timeout was raised 30s→60s after confirming timeout (not key regression) under parallel load. No visual/browser runner exists; dark/responsive preserved by construction.
+
 ## Remaining blockers and next step
 
 1. Keep SurrealDB 2.6.5 pinned as the native runtime; do not start UI work on SurrealDB 3.2.4.
