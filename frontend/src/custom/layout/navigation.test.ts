@@ -15,6 +15,11 @@ describe('resolveActiveHref', () => {
     expect(resolveActiveHref('/notebooks/notebook:abc')).toBe('/notebooks')
   })
 
+  it('matches nested models and settings sub-routes', () => {
+    expect(resolveActiveHref('/settings/models/extra')).toBe('/settings/models')
+    expect(resolveActiveHref('/sources/source:xyz')).toBe('/sources')
+  })
+
   it('returns undefined for unknown paths', () => {
     expect(resolveActiveHref('/unknown')).toBeUndefined()
     expect(resolveActiveHref(null)).toBeUndefined()
