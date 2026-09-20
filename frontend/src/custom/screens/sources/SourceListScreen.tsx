@@ -348,16 +348,16 @@ export function SourceListScreen() {
             </colgroup>
             <thead className="sticky top-0 bg-background z-10">
               <tr className="border-b">
-                <th className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">
+                <th className="h-12 px-4 text-start align-middle font-medium text-muted-foreground">
                   {renderSortableHeader('type', t('common.type'))}
                 </th>
-                <th className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">
+                <th className="h-12 px-4 text-start align-middle font-medium text-muted-foreground">
                   {renderSortableHeader('title', t('common.title'))}
                 </th>
-                <th className="h-12 px-4 text-left align-middle font-medium text-muted-foreground hidden sm:table-cell">
+                <th className="h-12 px-4 text-start align-middle font-medium text-muted-foreground hidden sm:table-cell">
                   {renderSortableHeader('created', t('common.created_label'))}
                 </th>
-                <th className="h-12 px-4 text-left align-middle font-medium text-muted-foreground hidden sm:table-cell">
+                <th className="h-12 px-4 text-start align-middle font-medium text-muted-foreground hidden sm:table-cell">
                   {renderSortableHeader('updated', t('common.updated_label'))}
                 </th>
                 <th className="h-12 px-4 text-center align-middle font-medium text-muted-foreground hidden md:table-cell">
@@ -366,7 +366,7 @@ export function SourceListScreen() {
                 <th className="h-12 px-4 text-center align-middle font-medium text-muted-foreground hidden lg:table-cell">
                   {renderSortableHeader('embedded', t('sources.embedded'), 'center')}
                 </th>
-                <th className="h-12 px-4 text-right align-middle font-medium text-muted-foreground">
+                <th className="h-12 px-4 text-end align-middle font-medium text-muted-foreground">
                   {t('common.actions')}
                 </th>
               </tr>
@@ -434,7 +434,7 @@ export function SourceListScreen() {
                       {source.embedded ? t('sources.yes') : t('sources.no')}
                     </span>
                   </td>
-                  <td className="h-12 px-4 text-right">
+                  <td className="h-12 px-4 text-end">
                     <Button
                       variant="ghost"
                       size="icon"

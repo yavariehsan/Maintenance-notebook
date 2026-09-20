@@ -1,38 +1,36 @@
-import { zhCN } from './zh-CN';
-import { enUS } from './en-US';
-import { zhTW } from './zh-TW';
-import { ptBR } from './pt-BR';
-import { jaJP } from './ja-JP';
-import { itIT } from './it-IT';
-import { frFR } from './fr-FR';
-import { ruRU } from './ru-RU';
-import { bnIN } from './bn-IN';
-import { caES } from './ca-ES';
-import { esES } from './es-ES';
-import { deDE } from './de-DE';
-import { plPL } from './pl-PL';
-import { trTR } from './tr-TR';
+import { en } from './en';
+import { fa } from './fa';
 
 export const resources = {
-  'zh-CN': { translation: zhCN },
-  'en-US': { translation: enUS },
-  'zh-TW': { translation: zhTW },
-  'pt-BR': { translation: ptBR },
-  'ja-JP': { translation: jaJP },
-  'it-IT': { translation: itIT },
-  'fr-FR': { translation: frFR },
-  'ru-RU': { translation: ruRU },
-  'bn-IN': { translation: bnIN },
-  'ca-ES': { translation: caES },
-  'es-ES': { translation: esES },
-  'de-DE': { translation: deDE },
-  'pl-PL': { translation: plPL },
-  'tr-TR': { translation: trTR },
+  en: { translation: en },
+  fa: { translation: fa },
 } as const;
 
-export type TranslationKeys = typeof enUS;
+export type TranslationKeys = typeof en;
 
 export type LanguageCode = keyof typeof resources;
+
+export const SUPPORTED_LANGUAGES: readonly LanguageCode[] = ['en', 'fa'];
+
+export function isSupportedLanguage(code: string | null | undefined): code is LanguageCode {
+  return code === 'en' || code === 'fa';
+}
+
+/** Fallback locale used for unsupported or legacy stored values. */
+export const FALLBACK_LANGUAGE: LanguageCode = 'en';
+
+/**
+ * Normalize any stored/detected language value to a supported code.
+ * Legacy region codes ('en-US') keep their language; removed locales
+ * ('de-DE', 'zh-CN', ...) safely fall back to English.
+ */
+export function normalizeLanguage(code: string | null | undefined): LanguageCode {
+  if (!code) return FALLBACK_LANGUAGE;
+  const lower = code.toLowerCase();
+  if (lower === 'fa' || lower.startsWith('fa-')) return 'fa';
+  if (lower === 'en' || lower.startsWith('en-')) return 'en';
+  return FALLBACK_LANGUAGE;
+}
 
 export type Language = {
   code: LanguageCode;
@@ -40,20 +38,21 @@ export type Language = {
 };
 
 export const languages: Language[] = [
-  { code: 'en-US', label: 'English' },
-  { code: 'tr-TR', label: 'Türkçe' },
-  { code: 'ca-ES', label: 'Català' },
-  { code: 'zh-CN', label: '简体中文' },
-  { code: 'zh-TW', label: '繁體中文' },
-  { code: 'pt-BR', label: 'Português' },
-  { code: 'ja-JP', label: '日本語' },
-  { code: 'it-IT', label: 'Italiano' },
-  { code: 'fr-FR', label: 'Français' },
-  { code: 'ru-RU', label: 'Русский' },
-  { code: 'bn-IN', label: 'বাংলা' },
-  { code: 'es-ES', label: 'Español' },
-  { code: 'de-DE', label: 'Deutsch' },
-  { code: 'pl-PL', label: 'Polski' },
+  { code: 'en', label: 'English' },
+  { code: 'fa', label: 'فارسی' },
 ];
 
-export { zhCN, enUS, zhTW, ptBR, jaJP, itIT, frFR, ruRU, bnIN, caES, esES, deDE, plPL, trTR };
+export type TextDirection = 'ltr' | 'rtl';
+
+export const languageDirections: Record<LanguageCode, TextDirection> = {
+  en: 'ltr',
+  fa: 'rtl',
+};
+
+/** Document direction for a language code; unknown codes fall back to English (ltr). */
+export function getLanguageDirection(code: string | null | undefined): TextDirection {
+  if (code === 'fa' || code?.startsWith('fa')) return 'rtl';
+  return 'ltr';
+}
+
+export { en, fa };

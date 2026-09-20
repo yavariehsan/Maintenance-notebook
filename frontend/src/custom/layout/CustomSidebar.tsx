@@ -24,10 +24,12 @@ import {
 import { ThemeToggle } from '@/components/common/ThemeToggle'
 import { LanguageToggle } from '@/components/common/LanguageToggle'
 import { useTranslation } from '@/lib/hooks/use-translation'
+import { getLanguageDirection } from '@/lib/locales'
 import { Separator } from '@/components/ui/separator'
 import {
   Book,
   ChevronLeft,
+  ChevronRight,
   Command,
   FileText,
   LogOut,
@@ -50,7 +52,7 @@ function CustomMark({ className }: { className?: string }) {
 type CreateTarget = 'source' | 'notebook' | 'podcast'
 
 export function CustomSidebar() {
-  const { t } = useTranslation()
+  const { t, language } = useTranslation()
   const pathname = usePathname()
   const activeHref = resolveActiveHref(pathname)
   const { logout } = useAuth()
@@ -59,6 +61,12 @@ export function CustomSidebar() {
 
   const [createMenuOpen, setCreateMenuOpen] = useState(false)
   const [isMac, setIsMac] = useState(true) // Default to Mac for SSR
+
+  // In RTL (Persian) the sidebar sits on the right side of the shell, so
+  // side-anchored UI (tooltips, menus, collapse chevron) mirrors as well.
+  const isRTL = getLanguageDirection(language) === 'rtl'
+  const outerSide: 'left' | 'right' = isRTL ? 'left' : 'right'
+  const CollapseIcon = isRTL ? ChevronRight : ChevronLeft
 
   // Detect platform for keyboard shortcut display
   useEffect(() => {
@@ -81,7 +89,7 @@ export function CustomSidebar() {
     <TooltipProvider delayDuration={0}>
       <div
         className={cn(
-          'custom-sidebar flex h-full flex-col bg-[var(--custom-sidebar)] text-[var(--custom-sidebar-foreground)] border-[var(--custom-sidebar-border)] border-r transition-all duration-300',
+          'custom-sidebar flex h-full flex-col bg-[var(--custom-sidebar)] text-[var(--custom-sidebar-foreground)] border-[var(--custom-sidebar-border)] border-e transition-all duration-300',
           isCollapsed ? 'w-16' : 'w-64'
         )}
       >
@@ -118,7 +126,7 @@ export function CustomSidebar() {
                 className="text-[var(--custom-sidebar-foreground)] hover:bg-[var(--custom-sidebar-accent)]"
                 data-testid="sidebar-toggle"
               >
-                <ChevronLeft className="h-4 w-4" />
+                <CollapseIcon className="h-4 w-4" />
               </Button>
             </>
           )}
@@ -152,7 +160,7 @@ export function CustomSidebar() {
                       </Button>
                     </DropdownMenuTrigger>
                   </TooltipTrigger>
-                  <TooltipContent side="right">{t('common.create')}</TooltipContent>
+                  <TooltipContent side={outerSide}>{t('common.create')}</TooltipContent>
                 </Tooltip>
               ) : (
                 <DropdownMenuTrigger asChild>
@@ -162,7 +170,7 @@ export function CustomSidebar() {
                     size="sm"
                     className="w-full justify-start font-display font-bold"
                   >
-                    <Plus className="h-4 w-4 mr-2" />
+                    <Plus className="h-4 w-4 me-2" />
                     {t('common.create')}
                   </Button>
                 </DropdownMenuTrigger>
@@ -170,7 +178,7 @@ export function CustomSidebar() {
 
               <DropdownMenuContent
                 align={isCollapsed ? 'end' : 'start'}
-                side={isCollapsed ? 'right' : 'bottom'}
+                side={isCollapsed ? outerSide : 'bottom'}
                 className="w-48"
               >
                 <DropdownMenuItem
@@ -227,7 +235,7 @@ export function CustomSidebar() {
                       className={cn(
                         'w-full gap-2.5 text-[13px] font-medium text-[var(--custom-sidebar-foreground)]/80 sidebar-menu-item relative',
                         isActive &&
-                          'bg-popover font-semibold text-[var(--custom-sidebar-foreground)] ring-1 ring-inset ring-border before:absolute before:-left-1.5 before:top-[7px] before:bottom-[7px] before:w-[3px] before:rounded-[2px] before:bg-[var(--custom-primary)]',
+                          'bg-popover font-semibold text-[var(--custom-sidebar-foreground)] ring-1 ring-inset ring-border before:absolute before:-start-1.5 before:top-[7px] before:bottom-[7px] before:w-[3px] before:rounded-[2px] before:bg-[var(--custom-primary)]',
                         isCollapsed ? 'justify-center px-2' : 'justify-start'
                       )}
                     >
@@ -244,7 +252,7 @@ export function CustomSidebar() {
                             {button}
                           </Link>
                         </TooltipTrigger>
-                        <TooltipContent side="right">{t(item.key)}</TooltipContent>
+                        <TooltipContent side={outerSide}>{t(item.key)}</TooltipContent>
                       </Tooltip>
                     )
                   }
@@ -298,7 +306,7 @@ export function CustomSidebar() {
                       <ThemeToggle iconOnly />
                     </div>
                   </TooltipTrigger>
-                  <TooltipContent side="right">{t('common.theme')}</TooltipContent>
+                  <TooltipContent side={outerSide}>{t('common.theme')}</TooltipContent>
                 </Tooltip>
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -306,7 +314,7 @@ export function CustomSidebar() {
                       <LanguageToggle iconOnly />
                     </div>
                   </TooltipTrigger>
-                  <TooltipContent side="right">{t('common.language')}</TooltipContent>
+                  <TooltipContent side={outerSide}>{t('common.language')}</TooltipContent>
                 </Tooltip>
               </>
             ) : (
@@ -329,7 +337,7 @@ export function CustomSidebar() {
                   <LogOut className="h-4 w-4" />
                 </Button>
               </TooltipTrigger>
-              <TooltipContent side="right">{t('common.signOut')}</TooltipContent>
+              <TooltipContent side={outerSide}>{t('common.signOut')}</TooltipContent>
             </Tooltip>
           ) : (
             <Button

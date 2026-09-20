@@ -1,4 +1,4 @@
-export const enUS = {
+export const en = {
   common: {
     search: "Search...",
     create: "New",
@@ -20,17 +20,6 @@ export const enUS = {
     newNotebook: "New Notebook",
     newPodcast: "New Podcast",
     language: "Language",
-    english: "English",
-    chinese: "简体中文",
-    japanese: "日本語",
-    french: "Français",
-    russian: "Русский",
-    bengali: "বাংলা",
-    catalan: "Català",
-    spanish: "Español",
-    german: "Deutsch",
-    polish: "Polski",
-    turkish: "Türkçe",
     source: "Source",
     notebook: "Notebook",
     podcast: "Podcast",
@@ -130,8 +119,6 @@ export const enUS = {
     errorDetails: "Error Details",
     editTransformation: "Edit Transformation",
     retry: "Try Again",
-    traditionalChinese: "繁體中文",
-    portuguese: "Português",
     completed: "completed",
     saveSuccess: "Saved successfully",
     contextModes: {
@@ -1006,7 +993,7 @@ export const enUS = {
   },
 }
 
-// Compile-time shape of the en-US translations. Every other locale must
+// Compile-time shape of the en translations. Every other locale must
 // `satisfies` this type so missing or extra keys fail `tsc`, not just the
 // runtime parity test.
-export type TranslationShape = typeof enUS;
+export type TranslationShape = typeof en;

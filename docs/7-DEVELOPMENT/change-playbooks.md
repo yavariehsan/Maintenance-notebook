@@ -26,7 +26,7 @@ Step-by-step guides for common types of changes in the Open Notebook codebase. E
 | 3 | `api/models.py` | Add field to `*Create`, `*Update` (Optional), and `*Response` schemas. |
 | 4 | `frontend/src/lib/types/api.ts` | Add field to the corresponding TypeScript interface (`*Response`, `Create*Request`, `Update*Request`). |
 | 5 | Frontend component (if user-facing) | Display or edit the field in the relevant component. |
-| 6 | `frontend/src/lib/locales/*/` | Add i18n strings if the field has a user-visible label. All 7 locales. |
+| 6 | `frontend/src/lib/locales/*/` | Add i18n strings if the field has a user-visible label. Both locales (en + fa). |
 | 7 | Tests | Add/update tests covering the new field — at minimum, API test for create/read. |
 
 **Verify:** Restart API (migration auto-runs), check logs for migration success, test via `/docs`.
@@ -171,20 +171,20 @@ Step-by-step guides for common types of changes in the Open Notebook codebase. E
 
 | Step | File(s) | What to Do |
 |------|---------|------------|
-| 1 | `frontend/src/lib/locales/en-US/index.ts` | Add English strings first. Group by feature. |
-| 2 | All other locale files | Add the same keys to: `pt-BR`, `zh-CN`, `zh-TW`, `ja-JP`, `ru-RU`, `bn-IN`. Use English as placeholder if translation unavailable. |
+| 1 | `frontend/src/lib/locales/en/index.ts` | Add English strings first. Group by feature. |
+| 2 | The `fa` locale file | Add the same keys with a real Persian translation (no English placeholders for user-facing strings). |
 | 3 | Component | Use `const { t } = useTranslation()` and access via `t('section.key')`. |
 
-**7 locales total.** Don't forget any.
+**2 locales total (en + fa).** Don't forget either.
 
 ### Adding a whole new language
 
 | Step | File(s) | What to Do |
 |------|---------|------------|
-| 1 | `frontend/src/lib/locales/<code>/index.ts` | Copy the structure from `en-US/index.ts` and translate all strings. |
+| 1 | `frontend/src/lib/locales/<code>/index.ts` | Copy the structure from `en/index.ts` and translate all strings. |
 | 2 | `frontend/src/lib/locales/index.ts` | Register the locale: import it, add to `resources`, add to the `languages` array (`{ code, label }`). |
 | 3 | `frontend/src/lib/utils/date-locale.ts` | Import the matching `date-fns/locale` and add it to `LOCALE_MAP`. |
-| 4 | **Test** | Switch languages via the UI language toggle; missing keys fall back to en-US. |
+| 4 | **Test** | Switch languages via the UI language toggle; missing keys fall back to en. |
 
 ---
 

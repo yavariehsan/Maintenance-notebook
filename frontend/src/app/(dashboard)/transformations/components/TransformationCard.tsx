@@ -35,12 +35,12 @@ export function TransformationCard({ transformation, onPlayground, onEdit }: Tra
         <Card>
           <CardHeader>
             <div className="flex items-start justify-between gap-4">
-              <CollapsibleTrigger className="flex-1 text-left">
+              <CollapsibleTrigger className="flex-1 text-start">
                 <div className={cn('flex items-center gap-3', isExpanded ? 'mb-2' : '')}>
                   {isExpanded ? (
                     <ChevronDown className="h-5 w-5" />
                   ) : (
-                    <ChevronRight className="h-5 w-5" />
+                    <ChevronRight className="h-5 w-5 rtl:rotate-180" />
                   )}
                   <div className="flex flex-col">
                     <span className="font-semibold">{transformation.name}</span>

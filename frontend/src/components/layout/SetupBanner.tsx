@@ -74,7 +74,7 @@ export function SetupBanner() {
           >
             <Link href="/settings/models">
               {t('setupBanner.goToSettings')}
-              <ArrowRight className="ml-2 h-4 w-4" />
+              <ArrowRight className="ms-2 h-4 w-4 rtl:rotate-180" />
             </Link>
           </Button>
         </AlertDescription>

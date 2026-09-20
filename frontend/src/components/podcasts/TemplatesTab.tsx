@@ -41,7 +41,7 @@ export function TemplatesTab() {
           value="overview"
           className="overflow-hidden rounded-md border border-border bg-card px-4"
         >
-          <AccordionTrigger className="gap-2 py-4 text-left text-sm font-semibold">
+          <AccordionTrigger className="gap-2 py-4 text-start text-sm font-semibold">
             <div className="flex items-center gap-2">
               <Lightbulb className="h-4 w-4 text-gold" />
               {t('podcasts.howTemplatesPowerTitle')}

@@ -8,8 +8,8 @@ const i18n = createInstance()
 beforeAll(async () => {
   await i18n.init({
     resources,
-    lng: 'en-US',
-    fallbackLng: 'en-US',
+    lng: 'en',
+    fallbackLng: 'en',
     interpolation: {
       escapeValue: false, // react already safes from xss
     },
@@ -40,7 +40,7 @@ describe('i18next interpolation', () => {
 
   it('interpolates in a non-English locale', () => {
     expect(
-      i18n.t('sources.selectedCount', { count: 4, lng: 'pt-BR' }),
+      i18n.t('sources.selectedCount', { count: 4, lng: 'fa' }),
     ).toContain('4')
   })
 })

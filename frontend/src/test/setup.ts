@@ -32,7 +32,7 @@ vi.mock('../lib/hooks/use-translation', () => {
   return {
     useTranslation: () => ({
       t: (key: string) => key,
-      language: 'en-US',
+      language: 'en',
       setLanguage: vi.fn(),
     }),
   }

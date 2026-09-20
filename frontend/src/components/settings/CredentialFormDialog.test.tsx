@@ -1,6 +1,6 @@
 import { render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
-import { enUS } from '@/lib/locales/en-US'
+import { en } from '@/lib/locales/en'
 import { CredentialFormDialog } from './CredentialFormDialog'
 
 // useTranslation is mocked globally in setup.ts (t returns the key string)
@@ -35,7 +35,7 @@ describe('CredentialFormDialog', () => {
       screen.queryByText('apiKeys.baseUrlOverrideHint'),
     ).not.toBeInTheDocument()
     expect(screen.getByLabelText('apiKeys.baseUrl')).toHaveValue('')
-    expect(enUS.apiKeys.openAICompatibleBaseUrlHint).toContain(
+    expect(en.apiKeys.openAICompatibleBaseUrlHint).toContain(
       'http://host.docker.internal:1234/v1',
     )
   })

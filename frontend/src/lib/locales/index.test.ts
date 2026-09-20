@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import fs from 'fs'
 import path from 'path'
 import { resources } from './index'
-import { enUS } from './en-US'
+import { en } from './en'
 
 const getKeys = (obj: Record<string, unknown>, prefix = ''): string[] => {
   return Object.keys(obj).reduce((res: string[], el) => {
@@ -48,12 +48,12 @@ const straySingleBraceTokens = (value: string): string[] => {
 }
 
 describe('Locale Parity', () => {
-  const enKeys = getKeys(enUS)
+  const enKeys = getKeys(en)
 
-  const locales = Object.entries(resources).filter(([code]) => code !== 'en-US')
+  const locales = Object.entries(resources).filter(([code]) => code !== 'en')
 
   it.each(locales.map(([code, resource]) => [code, resource] as const))(
-    '%s should have the same keys as en-US',
+    '%s should have the same keys as en',
     (code, resource) => {
       const localeKeys = getKeys(resource.translation as Record<string, unknown>)
 
@@ -67,12 +67,12 @@ describe('Locale Parity', () => {
 })
 
 describe('Placeholder Parity', () => {
-  const enLeaves = getLeafStrings(enUS)
+  const enLeaves = getLeafStrings(en)
 
-  const locales = Object.entries(resources).filter(([code]) => code !== 'en-US')
+  const locales = Object.entries(resources).filter(([code]) => code !== 'en')
 
   it.each(locales.map(([code, resource]) => [code, resource] as const))(
-    '%s interpolation placeholders should match en-US',
+    '%s interpolation placeholders should match en',
     (code, resource) => {
       const localeLeaves = getLeafStrings(
         resource.translation as Record<string, unknown>,
@@ -122,7 +122,7 @@ describe('Placeholder Parity', () => {
 
 describe('Unused Key Detection', () => {
   it(
-    'all en-US leaf keys should be referenced in source files',
+    'all en leaf keys should be referenced in source files',
     () => {
       const srcDir = path.resolve(__dirname, '../../..')
       const localesDir = path.resolve(__dirname)
@@ -145,7 +145,7 @@ describe('Unused Key Detection', () => {
       // Plural forms (key_one, key_other, …) are resolved by i18next from the
       // base key passed to t(), so check the base key instead.
       const pluralSuffix = /_(zero|one|two|few|many|other)$/
-      const leafKeys = getKeys(enUS)
+      const leafKeys = getKeys(en)
       const unused = leafKeys.filter(
         key => !corpus.includes(key.replace(pluralSuffix, '')),
       )

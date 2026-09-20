@@ -21,7 +21,7 @@ describe('useTranslation Hook', () => {
         return key
       },
       i18n: {
-        language: 'en-US',
+        language: 'en',
         changeLanguage: changeLanguageMock,
       },
     })
@@ -29,7 +29,7 @@ describe('useTranslation Hook', () => {
 
   it('should return standard t() function for translations', () => {
     const { result } = renderHook(() => useTranslation())
-    expect(result.current.language).toBe('en-US')
+    expect(result.current.language).toBe('en')
     expect(result.current.t('common.appName')).toBe('Open Notebook')
   })
 
@@ -37,9 +37,9 @@ describe('useTranslation Hook', () => {
     const { result } = renderHook(() => useTranslation())
 
     act(() => {
-      result.current.setLanguage('zh-CN')
+      result.current.setLanguage('fa')
     })
 
-    expect(changeLanguageMock).toHaveBeenCalledWith('zh-CN')
+    expect(changeLanguageMock).toHaveBeenCalledWith('fa')
   })
 })

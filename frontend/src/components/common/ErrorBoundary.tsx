@@ -4,10 +4,10 @@ import React from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { AlertTriangle, RefreshCw } from 'lucide-react'
-import { enUS } from '@/lib/locales/en-US'
+import { en } from '@/lib/locales/en'
 
 // Use English as fallback for ErrorBoundary (class component cannot use hooks)
-const t = enUS
+const t = en
 
 interface ErrorBoundaryState {
   hasError: boolean

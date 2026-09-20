@@ -112,19 +112,19 @@ export function AssetRegistryScreen() {
           </colgroup>
           <thead className="sticky top-0 bg-background z-10">
             <tr className="border-b">
-              <th className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">
+              <th className="h-12 px-4 text-start align-middle font-medium text-muted-foreground">
                 {t('common.name')}
               </th>
-              <th className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">
+              <th className="h-12 px-4 text-start align-middle font-medium text-muted-foreground">
                 {t('common.type')}
               </th>
-              <th className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">
+              <th className="h-12 px-4 text-start align-middle font-medium text-muted-foreground">
                 {t('assets.status')}
               </th>
-              <th className="h-12 px-4 text-left align-middle font-medium text-muted-foreground hidden sm:table-cell">
+              <th className="h-12 px-4 text-start align-middle font-medium text-muted-foreground hidden sm:table-cell">
                 {t('assets.location')}
               </th>
-              <th className="h-12 px-4 text-right align-middle font-medium text-muted-foreground">
+              <th className="h-12 px-4 text-end align-middle font-medium text-muted-foreground">
                 {t('common.actions')}
               </th>
             </tr>
@@ -153,7 +153,7 @@ export function AssetRegistryScreen() {
                 <td className="h-12 px-4 text-sm text-muted-foreground truncate hidden sm:table-cell">
                   {asset.location || '—'}
                 </td>
-                <td className="h-12 px-4 text-right">
+                <td className="h-12 px-4 text-end">
                   <div className="flex justify-end gap-1">
                     <Button
                       variant="ghost"

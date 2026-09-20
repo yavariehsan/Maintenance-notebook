@@ -64,7 +64,7 @@ export function RecentlyViewed({ limit = 12 }: RecentlyViewedProps) {
             {isOpen ? (
               <ChevronDown className="h-4 w-4" />
             ) : (
-              <ChevronRight className="h-4 w-4" />
+              <ChevronRight className="h-4 w-4 rtl:rotate-180" />
             )}
             <span className="sr-only">
               {t('notebooks.toggleRecentlyViewed', {

@@ -146,7 +146,7 @@ export function ContentSelectionPanel({
                           htmlFor={`notebook-toggle-${notebook.id}`}
                           className="flex w-full items-center justify-between gap-3 pointer-events-none"
                         >
-                          <div className="text-left">
+                          <div className="text-start">
                             <p className="font-medium text-sm text-foreground">
                               {notebook.name}
                             </p>
@@ -286,7 +286,7 @@ export function ContentSelectionPanel({
                                       <span className="text-xs text-muted-foreground">
                                         {t('common.updated')}{' '}
                                         {new Date(note.updated).toLocaleString(
-                                          language.startsWith('zh') ? language : 'en-US'
+                                          language.startsWith('fa') ? 'fa' : 'en'
                                         )}
                                       </span>
                                     </Label>
