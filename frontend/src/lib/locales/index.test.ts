@@ -155,6 +155,8 @@ describe('Unused Key Detection', () => {
         `Found ${unused.length} unused i18n key(s):\n${unused.join('\n')}`,
       ).toEqual([])
     },
-    30_000,
+    // Filesystem scan of the whole src tree; needs headroom under
+    // full parallel runs on slower machines (observed >30s twice).
+    60_000,
   )
 })

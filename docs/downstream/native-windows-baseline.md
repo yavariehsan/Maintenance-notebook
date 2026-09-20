@@ -253,19 +253,41 @@ Disposable run `m1-accept-20260920-bd9ce32c` (fresh `surrealdb-data`, SurrealDB 
 
 - `.env` cause: file starts with bytes `EF BB BF` (UTF-8 BOM) before `#`. `uv 0.12.7 --env-file .env` warns `Failed to parse environment file .env at position 0`; Python `load_dotenv()` tolerates the BOM, so the API still authenticated with `.env` credentials. Safest recommendation (not executed): re-save `.env` as UTF-8 without BOM with byte-identical content otherwise, approved explicitly by the operator since `.env` is a local gitignored file. No content or secret changes are needed.
 - Port 8000 conflict: observed `127.0.0.1:8000 LISTENING` owned by `ClientTools5` (PID 12772) during validation; later absent. Unrelated user processes were not terminated or modified.
-- `open_notebook/config.py` still hardcodes `DATA_FOLDER = "./data"`; no storage refactor made.
+- `open_notebook/config.py` supports `OPEN_NOTEBOOK_DATA_DIR` since Milestone 3 (unset = `./data`); see ADR-downstream-002.
 
 ### Remaining compatibility concerns
 
-- Frontend build/tests skipped: `frontend/node_modules` absent; no dependencies installed for this milestone.
+- Frontend dependencies installed via `npm ci`; lint (0 errors), full tests, and production build validated in Milestones 4–5.
 - Worker queue processing, upgrade from pre-existing data, and multi-client concurrency remain unvalidated.
 - `SEARCH ANALYZER` DDL plus direct and HTTP text search now pass on 2.6.5; vector search also passes. No further SurrealDB incompatibilities observed on 2.6.5.
 
+## Operator cutover (Milestone 5, validated 2026-09-20)
+
+Native Windows operator procedure with the real external root (no disposable override):
+
+```powershell
+$env:OPEN_NOTEBOOK_DATA_DIR = 'E:\Maintenance_Ai_Agent_Data'  # process-local; never in .env
+# 1. SurrealDB 2.6.5 (independent store, configured by invocation):
+surreal start --bind 127.0.0.1:8000 --user <SURREAL_USER> --pass <SURREAL_PASSWORD> "rocksdb:E:\Maintenance_Ai_Agent_Data\surrealdb"
+# 2. API (same environment):
+uv run --env-file .env run_api.py
+# 3. Worker (same environment):
+uv run --env-file .env surreal-commands-worker --import-modules commands --max-tasks 5
+# 4. Frontend: npm run dev (API must be up at 5055 first)
+```
+
+Rules: set `OPEN_NOTEBOOK_DATA_DIR` before process start for API **and** worker (paths bind at import); SurrealDB stays separately configured via its storage argument; verify with `GET /health` → `{"status":"healthy"}` plus absence of repository `./data`.
+
+Validation against `E:\Maintenance_Ai_Agent_Data` (pre-existing empty `surrealdb/`, created empty `uploads/`, `podcasts/`, `sqlite-db/`, `tiktoken-cache/`; nothing deleted or overwritten): SurrealDB `/health` 200, API `/health` + `/openapi.json` 200, fresh migrations 1..25 to version 25, read check plus create/delete probe with store restored, no repo `./data`, worker imported 1/1 modules with 8 registered commands and started its live query listener. Ports 8000/5055 verified closed afterward; no stray processes.
+
+Worker console note: with redirected output on a non-UTF-8 Windows console, the worker banner (`✅`) crashes `rich` with `UnicodeEncodeError` (cp1256) after a successful import. Set `$env:PYTHONUTF8 = '1'` and `$env:PYTHONIOENCODING = 'utf-8'` when capturing worker output; this is a harness encoding issue, not a storage issue.
+
+Second downstream screen (Milestone 5): `SourceListScreen` under `frontend/src/custom/screens/sources/` moves the sources composition verbatim (fetch/sort/infinite scroll/keyboard nav/delete flow) onto custom theme tokens; route page is a thin adapter. Full frontend suite 180/180, production build clean. The locale unused-key test needed its timeout raised 30s→60s (parallel-run filesystem scan exceeded 30s twice; root cause, not a key regression).
+
 ## Remaining blockers and next step
 
-1. Git ownership established; baseline documents pending commit in Milestone 2.
-2. Keep SurrealDB 2.6.5 pinned as the native runtime; do not start UI work on SurrealDB 3.2.4.
-3. Approve a separate external-storage implementation and tests before real-data use.
-4. Frontend install/build and worker queue processing belong to later milestones, not this baseline.
+1. Keep SurrealDB 2.6.5 pinned as the native runtime; do not start UI work on SurrealDB 3.2.4.
+2. Operator cutover to `E:\Maintenance_Ai_Agent_Data` validated; production start follows the procedure above.
+3. Worker queue processing under real load and visual UI review belong to later milestones.
 
-Do not begin the custom presentation layer until the baseline commit lands. No PowerShell automation scripts or custom UI files were created. No real application data was used.
+No PowerShell automation scripts or custom UI files were created outside the documented scope. No real application data was destroyed.
