@@ -1,6 +1,6 @@
 # ADR-downstream-002: External application storage
 
-- **Status**: Proposed (design only; not implemented).
+- **Status**: Accepted (implemented and validated Milestone 3).
 - **Date**: 2026-09-20
 - **Baseline**: `3127f14`
 - **Related**: [Native Windows baseline](../../downstream/native-windows-baseline.md), ADR-downstream-001.
@@ -30,6 +30,22 @@ No other persistent filesystem writes were found in `open_notebook/`, `api/`, or
 1. Introduce one root override (proposed name `OPEN_NOTEBOOK_DATA_DIR`, unset = current `./data` behavior) that re-roots `sqlite-db/`, `uploads/`, and `podcasts/`, preserving the relative layout so podcast relative audio paths survive the move. Keep `TIKTOKEN_CACHE_DIR` precedence as-is.
 2. Keep SurrealDB external by invocation (no code change): document the required native command with `rocksdb:E:\Maintenance_Ai_Agent_Data\surrealdb`.
 3. No per-directory overrides in the first change; one root variable is the smallest reviewable surface.
+
+## Implementation (Milestone 3)
+
+Implemented in `open_notebook/config.py`: `DATA_FOLDER` reads `OPEN_NOTEBOOK_DATA_DIR` (whitespace-trimmed, trailing separators stripped; blank/unset falls back to `./data`). All derived paths (`sqlite-db/checkpoints.sqlite`, `uploads/`, `podcasts/`, default `tiktoken-cache/`) and their `makedirs` follow unchanged. Explicit `TIKTOKEN_CACHE_DIR` still wins. No other file required changes: `api/routers/sources.py`, `commands/podcast_commands.py`, `open_notebook/podcasts/audio_paths.py`, and both graph modules consume the config values. SurrealDB configuration untouched. The variable must be set before process start (API and worker bind these paths at import).
+
+Contract:
+
+- Variable: `OPEN_NOTEBOOK_DATA_DIR` (absolute path recommended, e.g. `E:\Maintenance_Ai_Agent_Data`).
+- Supported: `uploads/`, `podcasts/` (relative audio-path semantics preserved), `sqlite-db/checkpoints.sqlite`, default `tiktoken-cache/`.
+- Default: unset/blank behaves exactly as before (`./data`).
+- Windows example: `$env:OPEN_NOTEBOOK_DATA_DIR = 'E:\Maintenance_Ai_Agent_Data'` before `uv run --env-file .env run_api.py` (and worker).
+- Migration: stop services, copy `./data/{uploads,podcasts,sqlite-db}` to the matching targets, set the variable, start SurrealDB 2.6.5 on the external store, start the API, expect version 25 with no pending migrations.
+- Rollback: unset the variable and restart; `./data` remains the fallback.
+- Backup: file-copy `uploads/`, `podcasts/`, `checkpoints.sqlite` while stopped; SurrealDB via stopped-RocksDB copy or `surreal export`; tokenizer cache excluded (regenerable).
+
+Validation: `tests/test_external_data_dir.py` (7 tests: default, external redirect, blank fallback, separator stripping, tiktoken precedence, restart persistence, isolation) passes; `ruff` and `mypy open_notebook/config.py` clean. Native run with SurrealDB 2.6.5, disposable Surreal store, and disposable external root: migrations 1..25, API startup, external `uploads/podcasts/sqlite-db/tiktoken-cache` plus `checkpoints.sqlite` created under the root, no `./data` in the repository, notebook create/read, restart shows `Database is already at the latest version` with data persisted, ports verified closed.
 
 ## Migration and backup
 
