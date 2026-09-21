@@ -382,7 +382,7 @@ function Sheet() {
       <SectionTitle>Forms</SectionTitle>
       <div className="max-w-md space-y-4">
         <div className="space-y-2">
-          <Label htmlFor={`name-input`}>Notebook name</Label>
+          <Label htmlFor={`name-input`}>Knowledge base name</Label>
           <Input id="name-input" placeholder="e.g. Transformer papers" />
         </div>
         <div className="space-y-2">
@@ -423,7 +423,7 @@ function Sheet() {
                 Overlays use the one real shadow and 6px corners.
               </DialogDescription>
             </DialogHeader>
-            <Input placeholder="Notebook name" />
+            <Input placeholder="Knowledge base name" />
             <DialogFooter>
               <Button variant="ghost">Cancel</Button>
               <Button>Save</Button>
