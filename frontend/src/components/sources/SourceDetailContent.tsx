@@ -14,6 +14,8 @@ import { Transformation } from '@/lib/types/transformations'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
 import { ContentUnavailable } from '@/components/common/ContentUnavailable'
 import { isNotFoundError } from '@/lib/utils/error-handler'
+import { getApiErrorMessage } from '@/lib/utils/error-handler'
+import { getContentPreview } from '@/lib/utils/content-preview'
 import { InlineEdit } from '@/components/common/InlineEdit'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -92,6 +94,33 @@ export function SourceDetailContent(props: SourceDetailContentProps) {
   // to key the component. The source data itself is cached by React Query, so
   // remounting is cheap: a cached source renders immediately.
   return <SourceDetailContentInner key={props.sourceId} {...props} />
+}
+
+/**
+ * Content-tab body. Large tabular sources are preview-only (header + first
+ * 5 data rows) so the tab stays fast; the stored full text is untouched and
+ * remains available to processing/embedding/retrieval.
+ */
+function ContentPreviewBody({
+  fullText,
+  emptyText,
+  previewNote,
+}: {
+  fullText?: string | null
+  emptyText: string
+  previewNote: (shown: number, total: number) => string
+}) {
+  const preview = getContentPreview(fullText)
+  return (
+    <>
+      {preview.isPreview && (
+        <p className="mb-3 text-xs text-muted-foreground">
+          {previewNote(preview.shownRows, preview.totalRows)}
+        </p>
+      )}
+      <MarkdownRenderer>{preview.text || emptyText}</MarkdownRenderer>
+    </>
+  )
 }
 
 function SourceDetailContentInner({
@@ -268,7 +297,9 @@ function SourceDetailContentInner({
       await refetchSource()
     } catch (err) {
       console.error('Failed to embed content:', err)
-      toast.error(t('common.error'))
+      // Surface the backend's actionable reason (e.g. no embedding model
+      // configured) instead of a generic error.
+      toast.error(getApiErrorMessage(err, t, 'common.error'))
     } finally {
       setIsEmbedding(false)
     }
@@ -566,9 +597,13 @@ function SourceDetailContentInner({
                   )}
                 </div>
               )}
-              <MarkdownRenderer>
-                {source.full_text || t('sources.noContent')}
-              </MarkdownRenderer>
+              <ContentPreviewBody
+                fullText={source.full_text}
+                emptyText={t('sources.noContent')}
+                previewNote={(shown, total) =>
+                  t('sources.contentPreviewNote', { shown, total })
+                }
+              />
             </section>
           </TabsContent>
 

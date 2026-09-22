@@ -398,6 +398,8 @@ export const en = {
     },
     id: "Source ID",
     topics: "Topics",
+    backToSources: "Back to Sources",
+    contentPreviewNote: "Showing the first {{shown}} of {{total}} table rows as a preview. The complete content is stored and used for processing and search.",
     equipmentCode: "Equipment code",
     equipmentCodePlaceholder: "e.g. BR1",
     equipmentCodeEmpty: "Not associated — click to set",

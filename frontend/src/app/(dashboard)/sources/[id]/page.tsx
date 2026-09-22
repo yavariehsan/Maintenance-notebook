@@ -7,6 +7,7 @@ import { ArrowLeft } from 'lucide-react'
 import { useSourceChat } from '@/lib/hooks/use-source-chat'
 import { ChatPanel } from '@/components/sources/ChatPanel'
 import { useNavigation } from '@/lib/hooks/use-navigation'
+import { useTranslation } from '@/lib/hooks/use-translation'
 import { SourceDetailContent } from '@/components/sources/SourceDetailContent'
 
 export default function SourceDetailPage() {
@@ -14,6 +15,7 @@ export default function SourceDetailPage() {
   const params = useParams()
   const sourceId = params?.id ? decodeURIComponent(params.id as string) : ''
   const navigation = useNavigation()
+  const { t } = useTranslation()
 
   // Initialize source chat
   const chat = useSourceChat(sourceId)
@@ -35,7 +37,7 @@ export default function SourceDetailPage() {
           className="mb-4"
         >
           <ArrowLeft className="me-2 h-4 w-4 rtl:rotate-180" />
-          {navigation.getReturnLabel()}
+          {navigation.returnTo?.label || t('sources.backToSources')}
         </Button>
       </div>
 

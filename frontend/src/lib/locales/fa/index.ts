@@ -403,6 +403,8 @@ export const fa = {
     },
     id: "شناسه منبع",
     topics: "موضوعات",
+    backToSources: "بازگشت به منابع",
+    contentPreviewNote: "نمایش {{shown}} ردیف اول از {{total}} ردیف جدول به‌صورت پیش‌نمایش. محتوای کامل ذخیره شده و برای پردازش و جستجو استفاده می‌شود.",
     equipmentCode: "کد تجهیز",
     equipmentCodePlaceholder: "مثلاً BR1",
     equipmentCodeEmpty: "مرتبط نشده — برای تنظیم کلیک کنید",

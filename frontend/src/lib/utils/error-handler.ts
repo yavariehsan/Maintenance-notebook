@@ -31,6 +31,7 @@ export const ERROR_MAP: Record<string, string> = {
   "Missing authorization header": "apiErrors.unauthorized",
   "Vector search requires an embedding model": "apiErrors.embeddingModelRequired",
   "Ask feature requires an embedding model": "apiErrors.embeddingModelRequired",
+  "No embedding model configured": "apiErrors.embeddingModelRequired",
   "Strategy model": "apiErrors.strategyModelNotFound",
   "Answer model": "apiErrors.answerModelNotFound",
   "Final answer model": "apiErrors.finalAnswerModelNotFound",
