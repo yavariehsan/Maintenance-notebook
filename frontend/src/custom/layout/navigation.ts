@@ -4,6 +4,7 @@ import {
   Bot,
   Cog,
   FileText,
+  ListTodo,
   Mic,
   Search,
   Settings,
@@ -41,6 +42,7 @@ export const customNavigation: CustomNavigationSection[] = [
       { key: 'navigation.notebooks', href: '/notebooks', icon: Book, accentClass: 'text-teal' },
       { key: 'navigation.askAndSearch', href: '/search', icon: Search },
       { key: 'navigation.smartMaintenanceGuide', href: '/maintenance-guide', icon: Stethoscope, accentClass: 'text-gold' },
+      { key: 'navigation.tasks', href: '/tasks', icon: ListTodo },
     ],
   },
   {

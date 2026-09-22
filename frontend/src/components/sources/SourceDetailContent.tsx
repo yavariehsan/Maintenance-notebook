@@ -66,6 +66,7 @@ import {
 import { formatDistanceToNow } from 'date-fns'
 import { getDateLocale } from '@/lib/utils/date-locale'
 import { toast } from 'sonner'
+import { useRouter } from 'next/navigation'
 import { useTranslation } from '@/lib/hooks/use-translation'
 import { SourceInsightDialog } from '@/components/sources/SourceInsightDialog'
 import { NotebookAssociations } from '@/components/sources/NotebookAssociations'
@@ -130,6 +131,7 @@ function SourceDetailContentInner({
   onClose
 }: SourceDetailContentProps) {
   const { t, language } = useTranslation()
+  const router = useRouter()
   const queryClient = useQueryClient()
   const [insights, setInsights] = useState<SourceInsightResponse[]>([])
   const [transformations, setTransformations] = useState<Transformation[]>([])
@@ -293,7 +295,12 @@ function SourceDetailContentInner({
     try {
       setIsEmbedding(true)
       const response = await embeddingApi.embedContent(sourceId, 'source')
-      toast.success(response.message || t('common.success'))
+      toast.success(response.message || t('common.success'), {
+        action: {
+          label: t('tasks.viewTasks'),
+          onClick: () => router.push('/tasks'),
+        },
+      })
       await refetchSource()
     } catch (err) {
       console.error('Failed to embed content:', err)

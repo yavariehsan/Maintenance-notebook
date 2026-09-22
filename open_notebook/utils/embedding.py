@@ -12,7 +12,7 @@ to ensure consistent behavior and proper handling of large content.
 
 import asyncio
 import os
-from typing import List, Optional
+from typing import Awaitable, Callable, List, Optional
 
 import numpy as np
 from loguru import logger
@@ -104,7 +104,9 @@ async def mean_pool_embeddings(embeddings: List[List[float]]) -> List[float]:
 
 
 async def generate_embeddings(
-    texts: List[str], command_id: Optional[str] = None
+    texts: List[str],
+    command_id: Optional[str] = None,
+    on_progress: Optional[Callable[[int, int], Awaitable[None]]] = None,
 ) -> List[List[float]]:
     """
     Generate embeddings for multiple texts with automatic batching and retry.
@@ -116,6 +118,10 @@ async def generate_embeddings(
     Args:
         texts: List of text strings to embed
         command_id: Optional command ID for error logging context
+        on_progress: Optional async callback invoked after each successful
+            batch as on_progress(processed_count, total_count), so background
+            jobs can persist real progress for status UIs. Failures inside
+            the callback are logged and swallowed to never break embedding.
 
     Returns:
         List of embedding vectors, one per input text
@@ -175,6 +181,14 @@ async def generate_embeddings(
             try:
                 batch_embeddings = await embedding_model.aembed(batch)
                 all_embeddings.extend(batch_embeddings)
+                if on_progress is not None:
+                    try:
+                        await on_progress(len(all_embeddings), len(texts))
+                    except Exception as progress_err:
+                        logger.debug(
+                            f"Embedding progress callback failed "
+                            f"(command: {command_id}): {progress_err}"
+                        )
                 break
             except Exception as e:
                 cmd_context = f" (command: {command_id})" if command_id else ""

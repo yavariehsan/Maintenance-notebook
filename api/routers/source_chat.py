@@ -27,6 +27,15 @@ from open_notebook.utils.graph_utils import get_session_message_count
 
 router = APIRouter()
 
+# Interval between SSE comment heartbeats emitted while the (blocking) graph
+# invocation runs. Source answers can take minutes on CPU-only inference with
+# large contexts; without periodic bytes on the wire, idle-sensitive proxies
+# between the browser and the API sever the stream and the UI reports a
+# network error. Must stay comfortably below such idle timeouts (the Next.js
+# dev rewrite proxy drops quiet streams after ~30s). SSE clients ignore `:`
+# comment lines, so the message protocol is unchanged.
+SOURCE_CHAT_SSE_HEARTBEAT_SECONDS = 15
+
 
 # Request/Response models
 class CreateSourceChatSessionRequest(BaseModel):
@@ -363,14 +372,33 @@ async def stream_source_chat_response(
         # can't resolve overloaded callables on its own. The ignore is a langgraph
         # typing limitation: it accepts a partial state dict at runtime, but the
         # signature requires the full state type.
-        result = await asyncio.to_thread(
-            lambda: source_chat_graph.invoke(
-                input=state_values,  # type: ignore[arg-type]
-                config=RunnableConfig(
-                    configurable={"thread_id": session_id, "model_id": model_override}
-                ),
+        invoke_task = asyncio.create_task(
+            asyncio.to_thread(
+                lambda: source_chat_graph.invoke(
+                    input=state_values,  # type: ignore[arg-type]
+                    config=RunnableConfig(
+                        configurable={
+                            "thread_id": session_id,
+                            "model_id": model_override,
+                        }
+                    ),
+                )
             )
         )
+        try:
+            # The invoke above can run for minutes (large source context on
+            # CPU-only inference) without producing any event. Emit heartbeat
+            # comments in the meantime (see SOURCE_CHAT_SSE_HEARTBEAT_SECONDS)
+            # so idle-sensitive proxies don't sever the stream mid-answer.
+            while not invoke_task.done():
+                await asyncio.sleep(SOURCE_CHAT_SSE_HEARTBEAT_SECONDS)
+                yield ": ping\n\n"
+            result = await invoke_task
+        except BaseException:
+            # Client disconnected (or server shutting down) mid-inference:
+            # stop tracking the task instead of awaiting an orphaned thread.
+            invoke_task.cancel()
+            raise
 
         # Stream the complete AI response
         if "messages" in result:

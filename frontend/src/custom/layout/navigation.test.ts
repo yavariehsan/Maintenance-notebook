@@ -25,8 +25,9 @@ describe('resolveActiveHref', () => {
     expect(resolveActiveHref(null)).toBeUndefined()
   })
 
-  it('matches the maintenance guide route', () => {
+  it('matches the maintenance guide and tasks routes', () => {
     expect(resolveActiveHref('/maintenance-guide')).toBe('/maintenance-guide')
+    expect(resolveActiveHref('/tasks')).toBe('/tasks')
   })
 
   it('covers every upstream sidebar route', () => {
@@ -37,6 +38,7 @@ describe('resolveActiveHref', () => {
       '/notebooks',
       '/search',
       '/maintenance-guide',
+      '/tasks',
       '/podcasts',
       '/settings/models',
       '/transformations',

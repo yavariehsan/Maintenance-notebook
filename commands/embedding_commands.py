@@ -360,10 +360,49 @@ async def embed_source_command(input_data: EmbedSourceInput) -> EmbedSourceOutpu
         if total_chunks == 0:
             raise ValueError("No chunks created after splitting text")
 
-        # 5. Generate embeddings for all chunks in batches
+        # 5. Generate embeddings for all chunks in batches, persisting real
+        # per-batch progress on the command record so status UIs (Tasks page)
+        # can show processed/total without guessing.
         cmd_id = get_command_id(input_data)
         logger.debug(f"Generating embeddings for {total_chunks} chunks")
-        embeddings = await generate_embeddings(chunks, command_id=cmd_id)
+
+        async def report_embedding_progress(processed: int, total: int) -> None:
+            if cmd_id == "unknown":
+                return
+            try:
+                await repo_query(
+                    "UPDATE $cmd_id SET progress_processed = $processed, "
+                    "progress_total = $total, updated_at = time::now()",
+                    {
+                        "cmd_id": ensure_record_id(cmd_id),
+                        "processed": processed,
+                        "total": total,
+                    },
+                )
+            except Exception as progress_err:
+                # Progress is best-effort observability; never fail the job.
+                logger.debug(
+                    f"Failed to persist embedding progress for command {cmd_id}: {progress_err}"
+                )
+
+        try:
+            # Stamp the start time (submission/creation timestamps are not
+            # persisted by the job library, so this is the earliest time we
+            # can honestly report for the job).
+            if cmd_id != "unknown":
+                await repo_query(
+                    "UPDATE $cmd_id SET started_at = time::now()",
+                    {"cmd_id": ensure_record_id(cmd_id)},
+                )
+        except Exception as progress_err:
+            logger.debug(
+                f"Failed to persist embedding start time for command {cmd_id}: {progress_err}"
+            )
+
+        await report_embedding_progress(0, total_chunks)
+        embeddings = await generate_embeddings(
+            chunks, command_id=cmd_id, on_progress=report_embedding_progress
+        )
 
         # Verify we got embeddings for all chunks
         if len(embeddings) != len(chunks):
@@ -385,6 +424,9 @@ async def embed_source_command(input_data: EmbedSourceInput) -> EmbedSourceOutpu
 
         logger.debug(f"Inserting {len(records)} source_embedding records")
         await repo_insert("source_embedding", records)
+        # Last worker-side write: doubles as the completion timestamp for
+        # successful jobs (the library's own status write carries no time).
+        await report_embedding_progress(total_chunks, total_chunks)
 
         return {"chunks_created": total_chunks}, f": {total_chunks} chunks"
 

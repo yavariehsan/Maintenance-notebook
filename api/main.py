@@ -45,6 +45,7 @@ from api.routers import (
     source_chat,
     sources,
     speaker_profiles,
+    tasks,
     transformations,
 )
 from api.routers import commands as commands_router
@@ -403,6 +404,7 @@ app.include_router(episode_profiles.router, prefix="/api", tags=["episode-profil
 app.include_router(speaker_profiles.router, prefix="/api", tags=["speaker-profiles"])
 app.include_router(chat.router, prefix="/api", tags=["chat"])
 app.include_router(source_chat.router, prefix="/api", tags=["source-chat"])
+app.include_router(tasks.router, prefix="/api", tags=["tasks"])
 app.include_router(credentials.router, prefix="/api", tags=["credentials"])
 app.include_router(providers.router, prefix="/api", tags=["providers"])
 app.include_router(capabilities.router, prefix="/api", tags=["capabilities"])
