@@ -407,11 +407,19 @@ class Source(ObjectModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     table_name: ClassVar[str] = "source"
+    # equipment_code must survive explicit clearing (None) through save(),
+    # whose _prepare_save_data otherwise drops None values.
+    nullable_fields: ClassVar[set[str]] = {"equipment_code"}
     asset: Optional[Asset] = None
     title: Optional[str] = None
     topics: Optional[List[str]] = Field(default_factory=list)
     full_text: Optional[str] = None
     last_viewed_at: Optional[datetime] = None
+    # Equipment association (migration 27): the equipment code (e.g. BR1)
+    # whose CMMS maintenance history this source documents. Plain metadata —
+    # no document duplication; matched case-insensitively on the trimmed
+    # value by the Smart Maintenance Guide retrieval scope.
+    equipment_code: Optional[str] = None
     command: Optional[Union[str, RecordID]] = Field(
         default=None, description="Link to surreal-commands processing job"
     )

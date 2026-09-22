@@ -38,6 +38,10 @@ dependencies = [
     "python-dotenv>=1.2.2",
     "httpx[socks]>=0.27.0",
     "content-core>=2.0.7,<3",
+    # Direct dependency: equipment Excel bulk import (api/asset_service.py).
+    # (Also present transitively via content-core; pinned directly so the
+    # import pipeline does not rely on a transitive version.)
+    "openpyxl>=3.1.5,<4",
     "ai-prompter>=0.4,<1",
     "esperanto>=2.25.1,<3",
     "surrealdb>=1.0.4",

@@ -1,0 +1,19 @@
+-- Migration 27 down: equipment knowledge workflow rollback.
+-- Removes the scoped search functions, the equipment_code source field, the
+-- asset equipment fields and the code uniqueness index. Data in dropped
+-- fields is not recoverable after rollback.
+
+REMOVE FUNCTION IF EXISTS fn::maintenance_text_search;
+REMOVE FUNCTION IF EXISTS fn::maintenance_vector_search;
+
+REMOVE INDEX IF EXISTS idx_source_equipment_code ON TABLE source;
+REMOVE FIELD IF EXISTS equipment_code ON TABLE source;
+
+REMOVE INDEX IF EXISTS idx_asset_code_unique ON TABLE asset;
+REMOVE FIELD IF EXISTS sub_class ON TABLE asset;
+REMOVE FIELD IF EXISTS main_class ON TABLE asset;
+REMOVE FIELD IF EXISTS plant_description ON TABLE asset;
+REMOVE FIELD IF EXISTS site_description ON TABLE asset;
+REMOVE FIELD IF EXISTS zone_description ON TABLE asset;
+REMOVE FIELD IF EXISTS factory ON TABLE asset;
+REMOVE FIELD IF EXISTS code ON TABLE asset;

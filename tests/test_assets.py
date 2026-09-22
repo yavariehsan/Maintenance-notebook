@@ -53,6 +53,37 @@ class TestAssetValidation:
         assert asset.location == "Hall B"
         assert asset.serial_number == "SN-42"
 
+    def test_equipment_fields_optional(self):
+        asset = Asset(
+            name="Horizontal Lathe Machine",
+            code="BR1",
+            factory="Shop2",
+            location="Burner&fixter shop-2",
+            zone_description="Production",
+            site_description="Machining",
+            plant_description="Blade",
+            main_class="Machine Tools",
+            sub_class="CNC",
+            asset_type="Horizontal Turning",
+            manufacturer="Machine Sazi Tabriz (MST)",
+            model="TC 20-HS",
+        )
+        assert asset.code == "BR1"
+        assert asset.factory == "Shop2"
+        assert asset.zone_description == "Production"
+        assert asset.site_description == "Machining"
+        assert asset.plant_description == "Blade"
+        assert asset.main_class == "Machine Tools"
+        assert asset.sub_class == "CNC"
+
+    def test_blank_code_rejected(self):
+        with pytest.raises(InvalidInputError):
+            Asset(name="Lathe", code="   ")
+
+    def test_missing_code_allowed_for_legacy_records(self):
+        asset = Asset(name="Legacy Pump")
+        assert asset.code is None
+
 
 class TestAssetApiContract:
     pytestmark = pytest.mark.asyncio

@@ -19,6 +19,13 @@ export interface AssetResponse {
   manufacturer: string | null
   model: string | null
   serial_number: string | null
+  code: string | null
+  factory: string | null
+  zone_description: string | null
+  site_description: string | null
+  plant_description: string | null
+  main_class: string | null
+  sub_class: string | null
   created: string
   updated: string
 }
@@ -32,6 +39,13 @@ export interface CreateAssetRequest {
   manufacturer?: string | null
   model?: string | null
   serial_number?: string | null
+  code?: string | null
+  factory?: string | null
+  zone_description?: string | null
+  site_description?: string | null
+  plant_description?: string | null
+  main_class?: string | null
+  sub_class?: string | null
 }
 
 export interface UpdateAssetRequest {
@@ -43,6 +57,54 @@ export interface UpdateAssetRequest {
   manufacturer?: string | null
   model?: string | null
   serial_number?: string | null
+  code?: string | null
+  factory?: string | null
+  zone_description?: string | null
+  site_description?: string | null
+  plant_description?: string | null
+  main_class?: string | null
+  sub_class?: string | null
+}
+
+export interface EquipmentImportIssue {
+  row_number: number
+  code: string | null
+  message: string
+}
+
+export interface EquipmentImportRow {
+  row_number: number
+  code: string
+  name: string
+}
+
+export interface EquipmentImportPreview {
+  total_rows: number
+  valid_rows: EquipmentImportRow[]
+  issues: EquipmentImportIssue[]
+  imported_count: number
+}
+
+export type MaintenanceAskStatus = 'ok' | 'no_sources' | 'no_context'
+
+export interface MaintenanceSourceRef {
+  id: string
+  title: string | null
+}
+
+export interface MaintenanceAskResponse {
+  equipment_code: string
+  status: MaintenanceAskStatus
+  answer: string
+  sources: MaintenanceSourceRef[]
+}
+
+export interface MaintenanceAskRequest {
+  equipment_code: string
+  question: string
+  answer_model?: string
+  final_answer_model?: string
+  max_results?: number
 }
 
 export interface NoteResponse {
@@ -62,6 +124,7 @@ export interface SourceListResponse {
     file_path?: string
     url?: string
   } | null
+  equipment_code?: string | null    // Associated equipment code (CMMS reports)
   embedded: boolean
   embedded_chunks: number            // ADD: From Python API
   insights_count: number
@@ -167,6 +230,7 @@ export interface UpdateSourceRequest {
   type?: 'link' | 'upload' | 'text'
   url?: string
   content?: string
+  equipment_code?: string
 }
 
 export interface APIError {

@@ -22,6 +22,8 @@ export const QUERY_KEYS = {
   notebook: (id: string) => ['notebooks', id] as const,
   assets: ['assets'] as const,
   asset: (id: string) => ['assets', id] as const,
+  maintenanceSources: (code: string) =>
+    ['maintenance', 'sources', code] as const,
   notes: (notebookId?: string) => ['notes', notebookId] as const,
   note: (id: string) => ['notes', id] as const,
   sources: (notebookId?: string) => ['sources', notebookId] as const,

@@ -2,6 +2,7 @@ import apiClient from './client'
 import {
   AssetResponse,
   CreateAssetRequest,
+  EquipmentImportPreview,
   UpdateAssetRequest,
 } from '@/lib/types/api'
 
@@ -13,6 +14,13 @@ export const assetsApi = {
 
   get: async (id: string) => {
     const response = await apiClient.get<AssetResponse>(`/assets/${id}`)
+    return response.data
+  },
+
+  getByCode: async (code: string) => {
+    const response = await apiClient.get<AssetResponse>(
+      `/assets/by-code/${encodeURIComponent(code)}`
+    )
     return response.data
   },
 
@@ -28,6 +36,17 @@ export const assetsApi = {
 
   delete: async (id: string) => {
     const response = await apiClient.delete<{ message: string }>(`/assets/${id}`)
+    return response.data
+  },
+
+  importEquipment: async (file: File, dryRun: boolean) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    const response = await apiClient.post<EquipmentImportPreview>(
+      '/assets/import',
+      formData,
+      { params: { dry_run: dryRun } }
+    )
     return response.data
   },
 }

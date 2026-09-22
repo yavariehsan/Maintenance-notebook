@@ -305,6 +305,7 @@ async def get_sources(
         # Query sources - include command field with FETCH
         query = f"""
             SELECT id, asset, created, title, updated, topics, command,
+            equipment_code,
             string::lowercase(title OR '') AS title_sort,
             ({SOURCE_TYPE_EXPRESSION}) AS type,
             (SELECT VALUE count() FROM source_insight WHERE source = $parent.id GROUP ALL)[0].count OR 0 AS insights_count,
@@ -359,6 +360,7 @@ async def get_sources(
                     )
                     if row.get("asset")
                     else None,
+                    equipment_code=row.get("equipment_code"),
                     embedded=row.get("embedded", False),
                     embedded_chunks=0,  # Not needed in list view
                     insights_count=row.get("insights_count", 0),
@@ -400,6 +402,7 @@ def _source_to_response(
         )
         if source.asset
         else None,
+        "equipment_code": source.equipment_code,
         "full_text": source.full_text,
         "embedded": embedded_chunks > 0,
         "embedded_chunks": embedded_chunks,
@@ -915,6 +918,11 @@ async def update_source(source_id: str, source_update: SourceUpdate):
             source.title = source_update.title
         if source_update.topics is not None:
             source.topics = source_update.topics
+        if source_update.equipment_code is not None:
+            # Empty string clears the equipment association; otherwise store
+            # the trimmed code (matching is case-insensitive downstream).
+            normalized_code = source_update.equipment_code.strip()
+            source.equipment_code = normalized_code or None
 
         await source.save()
 

@@ -8,6 +8,7 @@ import {
   Search,
   Settings,
   Shuffle,
+  Stethoscope,
   Wrench,
 } from 'lucide-react'
 
@@ -39,6 +40,7 @@ export const customNavigation: CustomNavigationSection[] = [
     items: [
       { key: 'navigation.notebooks', href: '/notebooks', icon: Book, accentClass: 'text-teal' },
       { key: 'navigation.askAndSearch', href: '/search', icon: Search },
+      { key: 'navigation.smartMaintenanceGuide', href: '/maintenance-guide', icon: Stethoscope, accentClass: 'text-gold' },
     ],
   },
   {

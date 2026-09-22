@@ -28,7 +28,8 @@ class NotebookResponse(BaseModel):
     note_count: int
 
 
-# Asset models (Maintenance Agent registry, migration 26)
+# Asset models (Maintenance Agent registry, migration 26; equipment knowledge
+# workflow fields added by migration 27)
 class AssetCreate(BaseModel):
     name: str = Field(..., description="Name of the asset")
     description: str = Field(default="", description="Description of the asset")
@@ -38,6 +39,15 @@ class AssetCreate(BaseModel):
     manufacturer: Optional[str] = Field(None, description="Manufacturer")
     model: Optional[str] = Field(None, description="Model designation")
     serial_number: Optional[str] = Field(None, description="Serial number")
+    # Equipment knowledge workflow (migration 27): code is the first-class
+    # equipment identifier shared by manual registration and Excel import.
+    code: Optional[str] = Field(None, description="Equipment code (e.g. BR1)")
+    factory: Optional[str] = Field(None, description="Factory")
+    zone_description: Optional[str] = Field(None, description="Zone description")
+    site_description: Optional[str] = Field(None, description="Site description")
+    plant_description: Optional[str] = Field(None, description="Plant description")
+    main_class: Optional[str] = Field(None, description="Main class")
+    sub_class: Optional[str] = Field(None, description="Sub class")
 
 
 class AssetUpdate(BaseModel):
@@ -49,6 +59,13 @@ class AssetUpdate(BaseModel):
     manufacturer: Optional[str] = Field(None, description="Manufacturer")
     model: Optional[str] = Field(None, description="Model designation")
     serial_number: Optional[str] = Field(None, description="Serial number")
+    code: Optional[str] = Field(None, description="Equipment code (e.g. BR1)")
+    factory: Optional[str] = Field(None, description="Factory")
+    zone_description: Optional[str] = Field(None, description="Zone description")
+    site_description: Optional[str] = Field(None, description="Site description")
+    plant_description: Optional[str] = Field(None, description="Plant description")
+    main_class: Optional[str] = Field(None, description="Main class")
+    sub_class: Optional[str] = Field(None, description="Sub class")
 
 
 class AssetResponse(BaseModel):
@@ -61,12 +78,77 @@ class AssetResponse(BaseModel):
     manufacturer: Optional[str] = None
     model: Optional[str] = None
     serial_number: Optional[str] = None
+    code: Optional[str] = None
+    factory: Optional[str] = None
+    zone_description: Optional[str] = None
+    site_description: Optional[str] = None
+    plant_description: Optional[str] = None
+    main_class: Optional[str] = None
+    sub_class: Optional[str] = None
     created: str
     updated: str
 
 
 class AssetDeleteResponse(BaseModel):
     message: str
+
+
+class EquipmentImportIssueModel(BaseModel):
+    row_number: int = Field(..., description="1-based Excel row number")
+    code: Optional[str] = Field(None, description="Equipment code of the row")
+    message: str = Field(..., description="Why the row was rejected")
+
+
+class EquipmentImportRowModel(BaseModel):
+    row_number: int = Field(..., description="1-based Excel row number")
+    code: str = Field(..., description="Equipment code of the row")
+    name: str = Field(..., description="Main description of the row")
+
+
+class EquipmentImportResponse(BaseModel):
+    total_rows: int = Field(..., description="Non-blank data rows detected")
+    valid_rows: List[EquipmentImportRowModel] = Field(
+        ..., description="Rows accepted by validation"
+    )
+    issues: List[EquipmentImportIssueModel] = Field(
+        ..., description="Rows rejected, with reasons"
+    )
+    imported_count: int = Field(
+        0, description="Rows persisted (0 for a dry-run preview)"
+    )
+
+
+class MaintenanceSourceRef(BaseModel):
+    id: str
+    title: Optional[str] = None
+
+
+class MaintenanceAskRequest(BaseModel):
+    equipment_code: str = Field(..., description="Equipment code to scope to")
+    question: str = Field(..., description="Maintenance question about the equipment")
+    answer_model: Optional[str] = Field(
+        None, description="Model ID for the per-search answer (default: tools default)"
+    )
+    final_answer_model: Optional[str] = Field(
+        None, description="Model ID for the final answer (default: tools default)"
+    )
+    max_results: int = Field(
+        10, ge=1, le=50, description="Maximum maintenance chunks to retrieve"
+    )
+
+
+class MaintenanceAskResponse(BaseModel):
+    equipment_code: str
+    status: Literal["ok", "no_sources", "no_context"] = Field(
+        ...,
+        description="ok: grounded answer; no_sources: no CMMS reports for this "
+        "equipment; no_context: reports exist but hold nothing relevant",
+    )
+    answer: str = Field("", description="Grounded answer (empty unless ok)")
+    sources: List[MaintenanceSourceRef] = Field(
+        default_factory=list,
+        description="Associated CMMS reports (contributing ones when ok)",
+    )
 
 
 class RecentlyViewedResponse(BaseModel):
@@ -423,6 +505,11 @@ class SourceCreate(BaseModel):
 class SourceUpdate(BaseModel):
     title: Optional[str] = Field(None, description="Source title")
     topics: Optional[List[str]] = Field(None, description="Source topics")
+    equipment_code: Optional[str] = Field(
+        None,
+        description="Equipment code this CMMS report belongs to "
+        "(empty string clears the association)",
+    )
 
 
 class SourceResponse(BaseModel):
@@ -430,6 +517,9 @@ class SourceResponse(BaseModel):
     title: Optional[str]
     topics: Optional[List[str]]
     asset: Optional[AssetModel]
+    equipment_code: Optional[str] = Field(
+        None, description="Associated equipment code (CMMS reports)"
+    )
     full_text: Optional[str]
     embedded: bool
     embedded_chunks: int
@@ -449,6 +539,9 @@ class SourceListResponse(BaseModel):
     title: Optional[str]
     topics: Optional[List[str]]
     asset: Optional[AssetModel]
+    equipment_code: Optional[str] = Field(
+        None, description="Associated equipment code (CMMS reports)"
+    )
     embedded: bool  # Boolean flag indicating if source has embeddings
     embedded_chunks: int  # Number of embedded chunks
     insights_count: int

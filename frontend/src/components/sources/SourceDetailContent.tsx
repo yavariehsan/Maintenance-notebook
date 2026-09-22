@@ -240,6 +240,24 @@ function SourceDetailContentInner({
     }
   }
 
+  const handleUpdateEquipmentCode = async (code: string) => {
+    if (!source || (source.equipment_code || '') === code.trim()) return
+
+    try {
+      await updateSource.mutateAsync({ id: sourceId, data: { equipment_code: code } })
+      // Same immediate-cache-patch pattern as the title edit above.
+      queryClient.setQueryData<SourceDetailResponse>(
+        QUERY_KEYS.source(sourceId),
+        (previous) =>
+          previous ? { ...previous, equipment_code: code.trim() || null } : previous
+      )
+    } catch (err) {
+      // The mutation hook already shows an error toast.
+      console.error('Failed to update source equipment code:', err)
+      await refetchSource()
+    }
+  }
+
   const handleEmbedContent = async () => {
     if (!source) return
 
@@ -424,6 +442,19 @@ function SourceDetailContentInner({
             <p className="mt-1 font-mono text-xs text-muted-foreground">
               {t('sources.id')}: {source.id}
             </p>
+            <div className="mt-2 flex items-center gap-2">
+              <span className="shrink-0 text-xs text-muted-foreground">
+                {t('sources.equipmentCode')}:
+              </span>
+              <InlineEdit
+                value={source.equipment_code || ''}
+                onSave={handleUpdateEquipmentCode}
+                className="font-mono text-xs"
+                inputClassName="font-mono text-xs h-7"
+                placeholder={t('sources.equipmentCodePlaceholder')}
+                emptyText={t('sources.equipmentCodeEmpty')}
+              />
+            </div>
           </div>
           <div className="flex items-center gap-2">
             {getSourceIcon()}

@@ -25,6 +25,10 @@ describe('resolveActiveHref', () => {
     expect(resolveActiveHref(null)).toBeUndefined()
   })
 
+  it('matches the maintenance guide route', () => {
+    expect(resolveActiveHref('/maintenance-guide')).toBe('/maintenance-guide')
+  })
+
   it('covers every upstream sidebar route', () => {
     const hrefs = customNavigation.map((section) => section.items.map((item) => item.href)).flat()
     expect(hrefs).toEqual([
@@ -32,6 +36,7 @@ describe('resolveActiveHref', () => {
       '/assets',
       '/notebooks',
       '/search',
+      '/maintenance-guide',
       '/podcasts',
       '/settings/models',
       '/transformations',

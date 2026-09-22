@@ -1,0 +1,124 @@
+-- Migration 27: equipment knowledge workflow (downstream maintenance milestone)
+-- 1. Equipment attributes on `asset` (Excel import / manual registration share
+--    the same model). Reused fields keep their meaning: name = Main
+--    Description, location = Main Function Location, asset_type = Type
+--    Description, manufacturer = Manufacture, model = Model.
+-- 2. `code` is the first-class equipment identifier (e.g. BR1). The UNIQUE
+--    index makes duplicate codes fail at the database layer; the API/service
+--    layer additionally rejects duplicates with user-facing messages before
+--    writing. The field stays optional so pre-27 rows (no code) keep working.
+-- 3. `equipment_code` on `source` associates a CMMS maintenance report with
+--    an equipment record without duplicating document storage. Matching is
+--    done case-insensitively on the trimmed value (see fn::maintenance_*).
+-- 4. fn::maintenance_vector_search / fn::maintenance_text_search restrict
+--    retrieval to sources carrying the requested equipment code, following
+--    the migration-24 scoping pattern. Chunks and insights follow their
+--    parent source. The Smart Maintenance Guide must use these functions so
+--    selecting BR1 can never retrieve BR2 records.
+
+DEFINE FIELD IF NOT EXISTS code ON TABLE asset TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS factory ON TABLE asset TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS zone_description ON TABLE asset TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS site_description ON TABLE asset TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS plant_description ON TABLE asset TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS main_class ON TABLE asset TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS sub_class ON TABLE asset TYPE option<string>;
+
+DEFINE INDEX IF NOT EXISTS idx_asset_code_unique ON TABLE asset FIELDS code UNIQUE;
+
+DEFINE FIELD IF NOT EXISTS equipment_code ON TABLE source TYPE option<string>;
+
+DEFINE INDEX IF NOT EXISTS idx_source_equipment_code ON TABLE source FIELDS equipment_code;
+
+DEFINE FUNCTION IF NOT EXISTS fn::maintenance_vector_search($query: array<float>, $match_count: int, $min_similarity: float, $equipment_code: string) {
+
+    let $code = string::uppercase(string::trim($equipment_code));
+    let $scoped_sources = (SELECT VALUE id FROM source WHERE string::uppercase(equipment_code OR '') == $code);
+
+    let $source_embedding_search = (
+        SELECT
+            source.id as id,
+            source.title as title,
+            content,
+            source.id as parent_id,
+            vector::similarity::cosine(embedding, $query) as similarity
+        FROM source_embedding
+        WHERE embedding != none and array::len(embedding)=array::len($query) AND
+             vector::similarity::cosine(embedding, $query) >= $min_similarity
+          AND source IN $scoped_sources
+        ORDER BY similarity DESC
+        LIMIT $match_count
+    );
+
+    let $source_insight_search = (
+        SELECT
+            id,
+            insight_type + ' - ' + (source.title OR '') as title,
+            content,
+            source.id as parent_id,
+            vector::similarity::cosine(embedding, $query) as similarity
+        FROM source_insight
+         WHERE embedding != none and array::len(embedding)=array::len($query) AND
+        vector::similarity::cosine(embedding, $query) >= $min_similarity
+          AND source IN $scoped_sources
+        ORDER BY similarity DESC
+        LIMIT $match_count
+    );
+
+    let $all_results = array::union($source_embedding_search, $source_insight_search);
+
+    RETURN (select id, parent_id, title, math::max(similarity) as similarity,
+    array::flatten(content) as matches
+    from $all_results where id is not None
+    group by id, parent_id, title ORDER BY similarity DESC LIMIT $match_count);
+
+};
+
+
+DEFINE FUNCTION IF NOT EXISTS fn::maintenance_text_search($query_text: string, $match_count: int, $equipment_code: string) {
+
+    let $code = string::uppercase(string::trim($equipment_code));
+    let $scoped_sources = (SELECT VALUE id FROM source WHERE string::uppercase(equipment_code OR '') == $code);
+
+    let $source_title_search = (
+        SELECT id, title,
+        search::highlight('`', '`', 1) as content,
+        id as parent_id,
+        math::max(search::score(1)) AS relevance
+        FROM source
+        WHERE title @1@ $query_text
+          AND id IN $scoped_sources
+        GROUP BY id);
+
+     let $source_embedding_search = (
+         SELECT source.id as id, source.title as title, search::highlight('`', '`', 1) as content, source.id as parent_id, math::max(search::score(1)) AS relevance
+         FROM source_embedding
+         WHERE content @1@ $query_text
+           AND source IN $scoped_sources
+         GROUP BY id);
+
+     let $source_full_search = (
+         SELECT id, title, search::highlight('`', '`', 1) as content, id as parent_id, math::max(search::score(1)) AS relevance
+         FROM source
+         WHERE full_text @1@ $query_text
+           AND id IN $scoped_sources
+         GROUP BY id);
+
+     let $source_insight_search = (
+         SELECT id, insight_type + " - " + (source.title OR '') as title, search::highlight('`', '`', 1) as content, id as parent_id,  math::max(search::score(1)) AS relevance
+         FROM source_insight
+         WHERE content @1@ $query_text
+           AND source IN $scoped_sources
+         GROUP BY id);
+
+    let $source_chunk_results = array::union($source_embedding_search, $source_full_search);
+
+    let $source_asset_results = array::union($source_title_search, $source_insight_search);
+
+    let $source_results = array::union($source_chunk_results, $source_asset_results );
+
+        RETURN (select id, parent_id, title, math::max(relevance) as relevance
+        from $source_results where id is not None
+        group by id, parent_id, title ORDER BY relevance DESC LIMIT $match_count);
+
+};

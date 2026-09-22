@@ -155,6 +155,7 @@ class TestRetrySourceProcessing:
         source.title = "My source"
         source.topics = []
         source.full_text = None
+        source.equipment_code = None
         source.asset = MagicMock(file_path=None, url="https://example.com/post")
         source.save = AsyncMock()
         source.get_embedded_chunks = AsyncMock(return_value=0)

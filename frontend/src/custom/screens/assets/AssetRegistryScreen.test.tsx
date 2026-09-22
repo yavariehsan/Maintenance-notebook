@@ -32,6 +32,10 @@ vi.mock('@/lib/hooks/use-assets', () => ({
   useDeleteAsset: vi.fn(),
 }))
 
+vi.mock('@/lib/hooks/use-maintenance', () => ({
+  useImportEquipment: () => ({ mutateAsync: vi.fn(), isPending: false }),
+}))
+
 const mockUseAssets = vi.mocked(useAssets)
 const mockUseCreate = vi.mocked(useCreateAsset)
 const mockUseUpdate = vi.mocked(useUpdateAsset)
@@ -47,6 +51,13 @@ const asset: AssetResponse = {
   manufacturer: 'Acme',
   model: 'P-100',
   serial_number: 'SN-1',
+  code: 'BR1',
+  factory: 'Shop2',
+  zone_description: 'Production',
+  site_description: 'Machining',
+  plant_description: 'Blade',
+  main_class: 'Machine Tools',
+  sub_class: 'CNC',
   created: '2026-09-20T00:00:00Z',
   updated: '2026-09-20T00:00:00Z',
 }
@@ -100,8 +111,33 @@ describe('AssetRegistryScreen', () => {
     render(<AssetRegistryScreen />)
 
     expect(screen.getByText('Pump P-101')).toBeDefined()
+    expect(screen.getByText('BR1')).toBeDefined()
     expect(screen.getByText('Hall A')).toBeDefined()
     expect(screen.getByText('active')).toBeDefined()
+  })
+
+  it('expands a row to show all equipment details', () => {
+    mockQueries({ data: [asset] })
+    render(<AssetRegistryScreen />)
+
+    // Details hidden until expanded
+    expect(screen.queryByText('Shop2')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'assets.toggleDetails' }))
+
+    expect(screen.getByText('Shop2')).toBeDefined()
+    expect(screen.getByText('Production')).toBeDefined()
+    expect(screen.getByText('Machining')).toBeDefined()
+    expect(screen.getByText('Blade')).toBeDefined()
+    expect(screen.getByText('Machine Tools')).toBeDefined()
+    expect(screen.getByText('CNC')).toBeDefined()
+  })
+
+  it('opens the Excel import dialog', () => {
+    mockQueries({ data: [asset] })
+    render(<AssetRegistryScreen />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'assets.importButton' }))
+    expect(screen.getByText('assets.importTitle')).toBeDefined()
   })
 
   it('creates an asset through the dialog', async () => {
@@ -112,6 +148,7 @@ describe('AssetRegistryScreen', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'assets.newAsset' }))
     fireEvent.change(screen.getByLabelText('common.name'), { target: { value: 'Pump P-102' } })
+    fireEvent.change(screen.getByLabelText('assets.code'), { target: { value: 'BR2' } })
     const saveButton = screen.getByRole('button', { name: 'common.save' })
     await waitFor(() => {
       expect(saveButton).toBeEnabled()
@@ -120,7 +157,7 @@ describe('AssetRegistryScreen', () => {
 
     await waitFor(() => {
       expect(mutateAsync).toHaveBeenCalledWith(
-        expect.objectContaining({ name: 'Pump P-102' })
+        expect.objectContaining({ name: 'Pump P-102', code: 'BR2' })
       )
     })
   })
