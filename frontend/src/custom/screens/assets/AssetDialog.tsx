@@ -132,13 +132,14 @@ export function AssetDialog({ open, onOpenChange, asset, onSubmit, isPending }: 
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[520px]">
+      <DialogContent className="sm:max-w-[520px] max-h-[90vh] flex flex-col">
         <DialogHeader>
           <DialogTitle>{asset ? t('assets.editAsset') : t('assets.newAsset')}</DialogTitle>
           <DialogDescription>{t('assets.description')}</DialogDescription>
         </DialogHeader>
 
-        <form onSubmit={handleSubmit(submit)} className="space-y-4">
+        <form onSubmit={handleSubmit(submit)} className="flex flex-col min-h-0 flex-1">
+          <div className="flex-1 min-h-0 overflow-y-auto space-y-4 pe-1">
           <div className="space-y-2">
             <Label htmlFor="asset-name">{t('common.name')}</Label>
             <Input
@@ -224,9 +225,10 @@ export function AssetDialog({ open, onOpenChange, asset, onSubmit, isPending }: 
               <Label htmlFor="asset-sub-class">{t('assets.subClass')}</Label>
               <Input id="asset-sub-class" {...register('sub_class')} autoComplete="off" disabled={isPending} />
             </div>
+            </div>
           </div>
 
-          <DialogFooter>
+          <DialogFooter className="pt-4">
             <Button type="button" variant="outline" onClick={closeDialog} disabled={isPending}>
               {t('common.cancel')}
             </Button>

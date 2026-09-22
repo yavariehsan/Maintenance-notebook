@@ -98,12 +98,21 @@ describe('AssetRegistryScreen', () => {
     expect(refetch).toHaveBeenCalled()
   })
 
-  it('shows an empty state with a create action', () => {
+  it('shows an empty state with create and import actions', () => {
     mockQueries({ data: [] })
     render(<AssetRegistryScreen />)
 
     expect(screen.getByText('assets.emptyTitle')).toBeDefined()
     expect(screen.getByRole('button', { name: 'assets.newAsset' })).toBeDefined()
+    expect(screen.getByRole('button', { name: 'assets.importButton' })).toBeDefined()
+  })
+
+  it('opens the Excel import dialog from the empty state', () => {
+    mockQueries({ data: [] })
+    render(<AssetRegistryScreen />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'assets.importButton' }))
+    expect(screen.getByText('assets.importTitle')).toBeDefined()
   })
 
   it('renders populated assets with metadata', () => {

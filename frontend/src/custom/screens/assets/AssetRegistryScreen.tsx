@@ -103,10 +103,16 @@ export function AssetRegistryScreen() {
           title={t('assets.emptyTitle')}
           description={t('assets.emptyDescription')}
           action={
-            <Button onClick={openCreate} variant="outline" className="mt-4">
-              <Plus className="h-4 w-4 me-2" />
-              {t('assets.newAsset')}
-            </Button>
+            <div className="mt-4 flex flex-col sm:flex-row gap-2">
+              <Button onClick={() => setImportOpen(true)} variant="outline">
+                <FileSpreadsheet className="h-4 w-4 me-2" />
+                {t('assets.importButton')}
+              </Button>
+              <Button onClick={openCreate} variant="outline">
+                <Plus className="h-4 w-4 me-2" />
+                {t('assets.newAsset')}
+              </Button>
+            </div>
           }
         />
       )
