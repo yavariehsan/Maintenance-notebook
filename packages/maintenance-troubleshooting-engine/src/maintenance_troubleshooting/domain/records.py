@@ -22,6 +22,9 @@ class MaintenanceRecord:
     record_id: str
     equipment_code: str
 
+    # Equipment display name (e.g. تجهیز); identity is equipment_code.
+    equipment_name: str | None = None
+
     # Request identity (preserved even though record_id derives from them).
     request_prefix: str | None = None
     request_number: str | None = None
@@ -46,7 +49,6 @@ class MaintenanceRecord:
     location_tree: str | None = None
     process_tree: str | None = None
     repair_unit_code: str | None = None
-    process_code: str | None = None
     process_name: str | None = None
 
     # Dates/times as recorded (heterogeneous workbook cells); keys such as

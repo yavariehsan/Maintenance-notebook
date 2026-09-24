@@ -28,9 +28,13 @@ from maintenance_troubleshooting.inputs.record_ids import (
 
 #: Canonical field → accepted header names (Persian defaults first).
 DEFAULT_COLUMN_ALIASES: dict[str, list[str]] = {
-    "equipment_code": ["تجهیز", "کد تجهیز", "کد دستگاه", "equipment_code", "equipment"],
+    # Equipment identity is کد فرایندی (stable process code). تجهیز is the
+    # display name; it doubles as a legacy fallback for the code so sheets
+    # that only carry تجهیز still resolve (resolution order matters: code
+    # claims a header before the name does).
+    "equipment_code": ["کد فرایندی", "کد تجهیز", "کد دستگاه", "تجهیز", "equipment_code"],
+    "equipment_name": ["تجهیز", "نام تجهیز", "equipment_name"],
     "repair_unit_code": ["کد واحد تعمیراتی"],
-    "process_code": ["کد فرایندی"],
     "process_name": ["فرایند"],
     "request_prefix": ["پیشوند درخواست"],
     "request_number": ["شماره درخواست"],
@@ -237,11 +241,12 @@ class SchemaReport:
 
 
 @dataclass
-class SkippedRow:
-    """A row that could not become a record (reported, never silent)."""
+class RowProblem:
+    """A row that needed a deterministic fallback (reported, never silent)."""
 
     row_number: int
     reason: str
+    record_id: str | None = None
     values: dict[str, Any] = field(default_factory=dict)
 
 
@@ -256,7 +261,8 @@ class InputReport:
     total_rows: int = 0
     empty_rows: int = 0
     records_built: int = 0
-    skipped_rows: list[SkippedRow] = field(default_factory=list)
+    fallback_ids: int = 0
+    row_problems: list[RowProblem] = field(default_factory=list)
 
 
 @dataclass
@@ -330,39 +336,59 @@ class ExcelMaintenanceReader:
             if all(v is None or (isinstance(v, str) and not v.strip()) for v in row):
                 report.empty_rows += 1
                 continue
-            try:
-                records.append(
-                    self._build_record(cells, resolved.field_to_header, offset)
-                )
-                report.records_built += 1
-            except ValueError as exc:
-                report.skipped_rows.append(
-                    SkippedRow(
-                        row_number=offset,
-                        reason=str(exc),
-                        values={k: v for k, v in cells.items() if v is not None},
-                    )
-                )
+            record, problem = self._build_record(
+                cells, resolved.field_to_header, offset, title
+            )
+            records.append(record)
+            report.records_built += 1
+            if problem is not None:
+                if problem.record_id is not None:
+                    report.fallback_ids += 1
+                report.row_problems.append(problem)
         return ReadResult(records=records, report=report)
 
+    def _fallback_record_id(self, sheet: str, row_number: int) -> str:
+        """Deterministic fallback ID for rows without usable request IDs."""
+        return f"ROW-{sheet}-{row_number}"
+
     def _build_record(
-        self, cells: dict[str, Any], field_to_header: dict[str, str], row_number: int
-    ) -> MaintenanceRecord:
-        """Build one canonical record; ``ValueError`` when unbuildable."""
+        self,
+        cells: dict[str, Any],
+        field_to_header: dict[str, str],
+        row_number: int,
+        sheet: str,
+    ) -> tuple[MaintenanceRecord, RowProblem | None]:
+        """Build one canonical record, falling back deterministically.
+
+        Rows are never discarded: a missing equipment code is kept blank
+        (flagged ERROR by validation) and an unbuildable request ID gets a
+        deterministic ``ROW-<sheet>-<row>`` fallback. Both are reported.
+        """
 
         def get(canonical: str) -> Any:
             header = field_to_header.get(canonical)
             return cells.get(header) if header else None
 
-        equipment_code = preserve_identifier(get("equipment_code"))
+        problem: RowProblem | None = None
+        equipment_code = preserve_identifier(get("equipment_code")) or ""
+        if not equipment_code:
+            problem = RowProblem(
+                row_number=row_number,
+                reason="blank equipment code; record kept for traceability",
+                values={k: v for k, v in cells.items() if v is not None},
+            )
         prefix = _cell_text(get("request_prefix"))
         number = preserve_identifier(get("request_number"))
-        if not equipment_code:
-            raise ValueError(f"row {row_number}: blank equipment code")
         try:
             record_id = self.record_id_strategy.build_id(prefix, number)
         except ValueError as exc:
-            raise ValueError(f"row {row_number}: {exc}") from exc
+            record_id = self._fallback_record_id(sheet, row_number)
+            problem = RowProblem(
+                row_number=row_number,
+                reason=f"unbuildable request ID ({exc}); fallback ID assigned",
+                record_id=record_id,
+                values={k: v for k, v in cells.items() if v is not None},
+            )
 
         tree_values = {
             name: _cell_text(get(name))
@@ -377,9 +403,11 @@ class ExcelMaintenanceReader:
         mapped_headers = set(field_to_header.values())
         extra = {h: v for h, v in raw.items() if h not in mapped_headers and v is not None}
 
-        return MaintenanceRecord(
-            record_id=record_id,
-            equipment_code=equipment_code,
+        return (
+            MaintenanceRecord(
+                record_id=record_id,
+                equipment_code=equipment_code,
+                equipment_name=_cell_text(get("equipment_name")),
             request_prefix=prefix,
             request_number=number,
             request_type=_cell_text(get("request_type")),
@@ -397,7 +425,6 @@ class ExcelMaintenanceReader:
             location_tree=_cell_text(get("location_tree")),
             process_tree=_cell_text(get("process_tree")),
             repair_unit_code=_cell_text(get("repair_unit_code")),
-            process_code=_cell_text(get("process_code")),
             process_name=_cell_text(get("process_name")),
             dates=dates,
             predicted_duration=_cell_text(get("predicted_duration")),
@@ -419,4 +446,6 @@ class ExcelMaintenanceReader:
             stop_time=_cell_text(get("stop_time")),
             raw=raw,
             extra=extra,
+            ),
+            problem,
         )

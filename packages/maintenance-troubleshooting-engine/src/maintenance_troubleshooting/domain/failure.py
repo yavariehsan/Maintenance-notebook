@@ -58,3 +58,21 @@ class FailureInterpretation:
     mechanism: FailureMechanism | None
     basis: str
     supporting_record_ids: list[str] = field(default_factory=list)
+
+
+@dataclass
+class CanonicalFailureMode:
+    """Mined failure mode: original, normalized, and canonical forms.
+
+    Clustering is deterministic and lexical (see the failure-mode mining
+    stage); an optional enrichment provider may suggest a better
+    ``enriched_label`` without ever overwriting the originals.
+    """
+
+    key: str
+    canonical_label: str
+    normalized_label: str = ""
+    enriched_label: str | None = None
+    aliases: list[str] = field(default_factory=list)
+    record_ids: list[str] = field(default_factory=list)
+    status: str = "classified"

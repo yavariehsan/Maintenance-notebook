@@ -35,14 +35,17 @@ A troubleshooting UI may display `Cause A — 62%`, but the attached
 Never label a heuristic as "probability" without recording the
 normalization method that produced it.
 
-## 3. Similarity is structural first
+## 3. Similarity is structural first, weights are configured
 
 `similarity.classify_technical_similarity` yields categories
 (`EXACT_EQUIPMENT` > `SAME_MODEL` > `SAME_MANUFACTURER_AND_TYPE` >
 `SAME_EQUIPMENT_TYPE` > `SAME_SUBCLASS` > `SAME_MAIN_CLASS`, else
-`UNRELATED`/`INDETERMINATE`). Categories are *not* scores and *not*
-weights. Mapping categories to numeric support is a separate, testable
-decision owned by a future `CauseRanker` implementation.
+`UNRELATED`/`INDETERMINATE`). `SimilarityAnalyzer` maps categories to
+support weights via `SimilarityConfig.technical_weights` (defaults
+1.0 / 0.8 / 0.6 / 0.45 / 0.30 / 0.15 / 0.0 / 0.0) — an explicit,
+configurable analytical hierarchy, not unexplained percentages. Every
+evidence row stores its weight *and* its reason
+(`same_manufacturer_and_model+same_failure_mode`, …).
 
 ## 4. Failure mode vs mechanism
 
@@ -55,23 +58,27 @@ The engine learns mode→mechanism links from repair descriptions,
 technical trees, repeated cases, causes, and mechanisms — never by
 merging the two fields.
 
-## 5. Intended evidence hierarchy (interfaces only)
+## 5. Evidence hierarchy (implemented in the miners)
 
 For a query like `Equipment = B104, Failure mode = Machine does not
-start`, later milestones should consider evidence roughly in this order
-(exposed as composable `EvidenceSource` implementations, ranked by a
-`CauseRanker` with an explicit, tested ordering contract):
+start`, evidence is collected per (equipment, canonical-mode) scope from
+same-mode records, weighted by technical similarity, roughly in this
+order (implemented in `EvidenceMiner` + `CauseMiner`, each row keeping
+its reason):
 
 1. exact historical records for the equipment;
 2. same model / highly similar technical tree;
 3. same manufacturer and equipment type;
 4. other technically similar equipment;
-5. semantically similar symptoms;
+5. (reserved) semantically similar symptoms;
 6. historically associated failure mechanisms;
 7. historically associated causes;
 8. repair actions associated with those causes.
 
-This list is an interface roadmap, not an implemented ranking.
+Rung 5 (semantic symptom similarity beyond the canonical mode) is
+reserved for the optional enrichment layer; the deterministic pipeline
+uses canonical-mode membership. The ordering is explicit, configured,
+and tested — not a hidden ranking.
 
 ## 6. Text mining stance
 

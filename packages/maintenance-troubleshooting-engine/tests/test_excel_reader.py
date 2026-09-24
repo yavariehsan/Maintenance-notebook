@@ -20,6 +20,7 @@ def test_reads_synthetic_workbook_with_defaults(tmp_path: Path) -> None:
     first = result.records[0]
     assert first.record_id == "QX-1001"
     assert first.equipment_code == "QX-101"
+    assert first.equipment_name == "فرز عمودی X1"
     assert first.request_description == "دستگاه روشن نمی‌شود"
     assert first.repair_description == "تعویض بلبرینگ اسپیندل انجام شد"
     assert first.failure_mode_recorded == "روشن نشدن دستگاه"
@@ -27,18 +28,27 @@ def test_reads_synthetic_workbook_with_defaults(tmp_path: Path) -> None:
     assert first.technical_tree.t5 == "مدل X1"
     assert first.location_tree == "سالن ۱"  # context, not similarity
     assert result.report.records_built == 3
-    assert result.report.skipped_rows == []
+    assert result.report.row_problems == []
     # Raw cells retained verbatim.
-    assert first.raw["تجهیز"] == "QX-101"
+    assert first.raw["کد فرایندی"] == "QX-101"
 
 
 def test_equipment_codes_survive_numeric_cells(tmp_path: Path) -> None:
-    headers = ["تجهیز", "پیشوند درخواست", "شماره درخواست"]
+    headers = ["کد فرایندی", "پیشوند درخواست", "شماره درخواست"]
     rows: list[list[Any]] = [["QX-1", "QX", 7], ["B104", "B", 104.0], [210, "M", "5"]]
     path = write_workbook(tmp_path / "codes.xlsx", headers=headers, rows=rows)
     records = ExcelMaintenanceReader().read(path).records
     assert [r.equipment_code for r in records] == ["QX-1", "B104", "210"]
     assert [r.record_id for r in records] == ["QX-7", "B-104", "M-5"]
+
+
+def test_legacy_sheets_resolve_code_from_tajhiz(tmp_path: Path) -> None:
+    """Sheets carrying only تجهیز still resolve the equipment code."""
+    headers = ["تجهیز", "پیشوند درخواست", "شماره درخواست"]
+    rows: list[list[Any]] = [["QX-1", "QX", "1"]]
+    path = write_workbook(tmp_path / "legacy.xlsx", headers=headers, rows=rows)
+    result = ExcelMaintenanceReader().read(path)
+    assert result.records[0].equipment_code == "QX-1"
 
 
 def test_preserve_identifier_unit_cases() -> None:
@@ -52,20 +62,24 @@ def test_preserve_identifier_unit_cases() -> None:
 
 
 def test_empty_and_unbuildable_rows_are_reported(tmp_path: Path) -> None:
-    headers = ["تجهیز", "پیشوند درخواست", "شماره درخواست"]
+    headers = ["کد فرایندی", "پیشوند درخواست", "شماره درخواست"]
     rows: list[list[Any]] = [
         ["QX-1", "QX", "1"],
         [None, None, None],  # empty -> counted, skipped
         ["", "", ""],  # empty -> counted, skipped
-        ["QX-2", "", ""],  # unbuildable -> skipped with reason
-        ["QX-2", "QX", "2", "extra-cell"],  # unmapped content lands in extra
+        ["QX-2", "", ""],  # unbuildable ID -> deterministic fallback, kept
+        ["", "QX", "9"],  # blank code -> kept blank, flagged by validation
     ]
     path = write_workbook(tmp_path / "messy.xlsx", headers=headers, rows=rows)
     result = ExcelMaintenanceReader().read(path)
-    assert len(result.records) == 2
+    assert len(result.records) == 3
     assert result.report.empty_rows == 2
-    assert len(result.report.skipped_rows) == 1
-    assert "prefix" in result.report.skipped_rows[0].reason
+    assert result.report.fallback_ids == 1
+    assert len(result.report.row_problems) == 2
+    fallback = next(r for r in result.records if r.record_id.startswith("ROW-"))
+    assert fallback.record_id == "ROW-repairs-5"
+    blank = next(r for r in result.records if r.equipment_code == "")
+    assert blank.record_id == "QX-9"
 
 
 def test_missing_required_columns_raise(tmp_path: Path) -> None:

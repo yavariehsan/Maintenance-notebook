@@ -91,6 +91,9 @@ class Equipment:
     manufacturer: str | None = None
     model: str | None = None
     technical_tree: TechnicalTree = field(default_factory=TechnicalTree)
+    record_count: int = 0
+    # Display name only (e.g. تجهیز consensus); never identity.
+    name: str | None = None
 
     def identity_key(self) -> str:
         """Stable identity key: the exact equipment code."""

@@ -85,7 +85,9 @@ def test_cli_commands(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
     assert main(["validate", path]) == 0
     assert "3/3" in capsys.readouterr().out
 
-    assert main(["analyze", path]) == 0
+    db_path = str(tmp_path / "kb.db")
+    assert main(["analyze", path, "-o", db_path]) == 0
+    assert Path(db_path).exists()
 
     out = str(tmp_path / "kb.json")
     assert main(["export", path, "-o", out]) == 0
@@ -93,15 +95,31 @@ def test_cli_commands(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
     assert "maintenance-troubleshooting" in build_parser().prog
 
 
-def test_cli_validate_fails_on_unbuildable_rows(
+def test_cli_inspect_output(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    path = str(write_workbook(tmp_path / "history.xlsx"))
+    db_path = str(tmp_path / "kb.db")
+    assert main(["analyze", path, "-o", db_path]) == 0
+    capsys.readouterr()
+
+    assert main(["inspect-output", db_path]) == 0
+    out = capsys.readouterr().out
+    assert "QX-101" in out
+
+    assert main(["inspect-output", db_path, "--equipment", "QX-101"]) == 0
+    assert "QX-101" in capsys.readouterr().out
+
+    assert main(["inspect-output", db_path, "--equipment", "NOPE"]) == 1
+
+
+def test_cli_validate_fails_on_blank_equipment(
     tmp_path: Path, capsys: pytest.CaptureFixture
 ) -> None:
     path = str(
         write_workbook(
             tmp_path / "bad.xlsx",
-            headers=["تجهیز", "پیشوند درخواست", "شماره درخواست"],
-            rows=[["QX-1", "", ""]],
+            headers=["کد فرایندی", "پیشوند درخواست", "شماره درخواست"],
+            rows=[["", "QX", "1"]],
         )
     )
     assert main(["validate", path]) == 1
-    assert "row 2" in capsys.readouterr().out
+    assert "equipment_code" in capsys.readouterr().out

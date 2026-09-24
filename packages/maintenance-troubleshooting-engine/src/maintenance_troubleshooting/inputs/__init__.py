@@ -9,8 +9,8 @@ from maintenance_troubleshooting.inputs.excel import (
     InputReport,
     ReadResult,
     ResolvedMapping,
+    RowProblem,
     SchemaReport,
-    SkippedRow,
     preserve_identifier,
 )
 from maintenance_troubleshooting.inputs.record_ids import (
@@ -29,7 +29,7 @@ __all__ = [
     "ReadResult",
     "RecordIdStrategy",
     "ResolvedMapping",
+    "RowProblem",
     "SchemaReport",
-    "SkippedRow",
     "preserve_identifier",
 ]

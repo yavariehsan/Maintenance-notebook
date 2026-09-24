@@ -1,32 +1,46 @@
-"""Pipeline orchestration and future evidence/ranking interfaces.
+"""Pipeline orchestration: two phases, explicit stages.
 
-This milestone runs the real input → canonical → quality stages and
-returns a typed artifact. Guide ranking (the §21 evidence hierarchy) is
-exposed as protocols so later milestones implement and test it explicitly.
+Phase A (batch, offline) runs the full stage chain once and materializes
+a SQLite troubleshooting database. Phase B (runtime) reads that database
+through :class:`TroubleshootingRepository` — no mining at query time.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
 
 from maintenance_troubleshooting.config import EngineConfig
+from maintenance_troubleshooting.domain.equipment import Equipment
 from maintenance_troubleshooting.domain.evidence import RepairEvidence
+from maintenance_troubleshooting.domain.failure import CanonicalFailureMode
 from maintenance_troubleshooting.domain.guides import TroubleshootingGuide
 from maintenance_troubleshooting.domain.records import MaintenanceRecord
+from maintenance_troubleshooting.domain.run import AnalysisRun
+from maintenance_troubleshooting.enrichment import (
+    KnowledgeEnrichmentProvider,
+    NoOpEnrichmentProvider,
+)
 from maintenance_troubleshooting.inputs import (
     ColumnMapping,
-    ExcelMaintenanceReader,
     InputReport,
 )
-from maintenance_troubleshooting.inputs.record_ids import PrefixNumberRecordId
 from maintenance_troubleshooting.outputs import TroubleshootingKnowledgeBase
-from maintenance_troubleshooting.quality import (
-    DataQualityReport,
-    DuplicateDetector,
-    RecordValidator,
-)
+from maintenance_troubleshooting.quality import DataQualityReport
+from maintenance_troubleshooting.stages.base import PipelineContext, Stage
+from maintenance_troubleshooting.stages.causes import CauseMiner
+from maintenance_troubleshooting.stages.equipment import EquipmentAnalyzer
+from maintenance_troubleshooting.stages.evidence import EvidenceMiner
+from maintenance_troubleshooting.stages.failure_modes import FailureModeAnalyzer
+from maintenance_troubleshooting.stages.normalization import Normalizer
+from maintenance_troubleshooting.stages.parsing import RecordParser
+from maintenance_troubleshooting.stages.quality import DataQualityAnalyzer
+from maintenance_troubleshooting.stages.repairs import RepairActionMiner
+from maintenance_troubleshooting.stages.similarity import SimilarityAnalyzer
+from maintenance_troubleshooting.stages.synthesis import KnowledgeSynthesizer
+from maintenance_troubleshooting.stages.writer import OutputDatabaseWriter
 from maintenance_troubleshooting.version import __version__ as engine_version
 
 
@@ -39,6 +53,11 @@ class AnalysisResult:
     knowledge_base: TroubleshootingKnowledgeBase | None = None
     input_report: InputReport | None = None
     warnings: list[str] = field(default_factory=list)
+    equipment: list[Equipment] = field(default_factory=list)
+    failure_modes: list[CanonicalFailureMode] = field(default_factory=list)
+    guides: list[TroubleshootingGuide] = field(default_factory=list)
+    database_path: str | None = None
+    run: AnalysisRun | None = None
 
 
 @dataclass(frozen=True)
@@ -51,7 +70,7 @@ class EvidenceQuery:
 
 
 class EvidenceSource(Protocol):
-    """One rung of the future evidence hierarchy (§21 roadmap).
+    """One rung of the evidence hierarchy (custom pipeline extensions).
 
     Implementations collect evidence for a query without ranking it;
     ordering across sources belongs to ``CauseRanker``.
@@ -66,7 +85,7 @@ class EvidenceSource(Protocol):
 
 
 class CauseRanker(Protocol):
-    """Order candidate causes by evidence strength (future milestone).
+    """Order candidate causes by evidence strength (custom extensions).
 
     The ordering contract must be explicit and tested; percentages it
     emits must go through ``normalize_probabilities`` with documented
@@ -81,44 +100,82 @@ class CauseRanker(Protocol):
     ) -> list[TroubleshootingGuide]: ...
 
 
+def build_stages(
+    output_path: str | Path | None,
+    started_at: str,
+    enrichment: KnowledgeEnrichmentProvider | None,
+) -> list[Stage]:
+    """Assemble the ordered stage chain (Phase A)."""
+    stages: list[Stage] = [
+        RecordParser(),
+        Normalizer(),
+        DataQualityAnalyzer(),
+        EquipmentAnalyzer(),
+        FailureModeAnalyzer(),
+        SimilarityAnalyzer(),
+        EvidenceMiner(),
+        CauseMiner(),
+        RepairActionMiner(),
+        KnowledgeSynthesizer(provider=enrichment or NoOpEnrichmentProvider()),
+    ]
+    if output_path is not None:
+        stages.append(OutputDatabaseWriter(output_path, started_at=started_at))
+    return stages
+
+
 def analyze_workbook(
     input_path: str | Path,
     configuration: EngineConfig | None = None,
     column_mapping: ColumnMapping | None = None,
+    output_path: str | Path | None = None,
+    enrichment: KnowledgeEnrichmentProvider | None = None,
 ) -> AnalysisResult:
-    """Run input → canonical records → data quality; return typed artifact.
+    """Run the batch pipeline; optionally materialize the SQLite database.
 
-    Guide ranking is not implemented in this milestone: the returned
-    knowledge base is an (honest, empty) shell carrying source provenance
-    and record counts for later stages to populate.
+    Deterministic for identical input + configuration + engine version
+    (the ``none`` enrichment default). Pass ``output_path`` to atomically
+    write the troubleshooting database; guides are always built in memory.
     """
     config = configuration or EngineConfig.default()
-    reader = ExcelMaintenanceReader(
-        record_id_strategy=PrefixNumberRecordId(),
-        sheet_name=config.input.sheet_name,
-        header_row=config.input.header_row,
+    started_at = datetime.now(timezone.utc).isoformat()
+    context = PipelineContext(
+        config=config,
+        column_mapping=column_mapping or ColumnMapping.default(),
+        input_path=str(input_path),
     )
-    read_result = reader.read(input_path, column_mapping)
-
-    validator = RecordValidator(min_repair_length=config.text_mining.min_repair_length)
-    quality = validator.validate_all(read_result.records)
-    quality.duplicates.extend(DuplicateDetector().find_duplicates(read_result.records))
+    for stage in build_stages(output_path, started_at, enrichment):
+        context = stage.run(context)
 
     knowledge_base = TroubleshootingKnowledgeBase.empty(
         engine_version=engine_version, source_path=str(input_path)
     )
-    knowledge_base.record_count = len(read_result.records)
+    knowledge_base.record_count = len(context.records)
 
-    warnings = [
-        f"row {row.row_number}: {row.reason}" for row in read_result.report.skipped_rows
-    ]
-    if quality.duplicates:
-        warnings.append(f"{len(quality.duplicates)} duplicate record-ID groups found")
+    # Legacy JSON-knowledge-base compatibility: expose mined guides through
+    # the M1 artifact shape (guides are the new content; counts stay honest).
+    knowledge_base.guides = list(context.guides)
 
     return AnalysisResult(
-        records=read_result.records,
-        quality_report=quality,
+        records=context.records,
+        quality_report=context.quality_report,
         knowledge_base=knowledge_base,
-        input_report=read_result.report,
-        warnings=warnings,
+        input_report=context.input_report,
+        warnings=list(context.warnings),
+        equipment=sorted(context.equipment.values(), key=lambda e: e.equipment_code),
+        failure_modes=sorted(context.failure_modes.values(), key=lambda m: m.key),
+        guides=list(context.guides),
+        database_path=str(output_path) if output_path is not None else None,
+        run=context.run,
     )
+
+
+# --- Public orchestration helpers --------------------------------------------
+
+__all__ = [
+    "AnalysisResult",
+    "CauseRanker",
+    "EvidenceQuery",
+    "EvidenceSource",
+    "analyze_workbook",
+    "build_stages",
+]

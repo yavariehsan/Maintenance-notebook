@@ -44,3 +44,8 @@ class RepairEvidence:
     mechanism: str | None = None
     technical_snapshot: TechnicalTree | None = None
     notes: str | None = None
+    # Mining scope and weighting (populated by the evidence miner).
+    scope_equipment: str = ""
+    scope_failure_mode: str = ""
+    relevance_detail: str = ""
+    weight: float = 1.0

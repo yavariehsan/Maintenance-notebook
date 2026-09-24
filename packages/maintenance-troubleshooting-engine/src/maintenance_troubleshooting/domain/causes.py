@@ -47,6 +47,16 @@ class TroubleshootingCause:
     confidence: Confidence | None = None
     probability: CauseProbability | None = None
     recommended_actions: list[str] = field(default_factory=list)
+    # Mining scope and support accounting (populated by synthesis).
+    cause_id: str = ""
+    equipment_code: str = ""
+    failure_mode_id: str = ""
+    kinds: list[str] = field(default_factory=list)
+    support_percent: float | None = None
+    weighted_evidence: float = 0.0
+    denominator: float = 0.0
+    calculation_method: str = ""
+    rank: int = 0
 
     @property
     def evidence_count(self) -> int:

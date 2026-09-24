@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 SYNTHETIC_HEADERS: list[str] = [
+    "کد فرایندی",
     "تجهیز",
     "پیشوند درخواست",
     "شماره درخواست",
@@ -31,6 +32,7 @@ SYNTHETIC_HEADERS: list[str] = [
 SYNTHETIC_ROWS: list[list[Any]] = [
     [
         "QX-101",
+        "فرز عمودی X1",
         "QX",
         "1001",
         "دستگاه روشن نمی‌شود",
@@ -48,6 +50,7 @@ SYNTHETIC_ROWS: list[list[Any]] = [
     ],
     [
         "QX-102",
+        "فرز عمودی X2",
         "QX",
         "1002",
         "نشتی هوا از اتصالات",
@@ -65,6 +68,7 @@ SYNTHETIC_ROWS: list[list[Any]] = [
     ],
     [
         "QY-201",
+        "تراش افقی Y2",
         "QY",
         "2001",
         "محور مرجع نمی‌شود",

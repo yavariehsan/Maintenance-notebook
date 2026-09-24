@@ -44,10 +44,27 @@ class NormalizationConfig:
 
 @dataclass
 class SimilarityConfig:
-    """Technical/text similarity stage options (ranking is a later milestone)."""
+    """Technical/text similarity stage options.
+
+    ``technical_weights`` maps technical-similarity category names to
+    support weights in [0, 1] (analytical hierarchy, configurable and
+    documented — not arbitrary percentages).
+    """
 
     text_similarity: str = "token-set-jaccard"
     char_ngram_n: int = 3
+    technical_weights: dict[str, float] = field(
+        default_factory=lambda: {
+            "exact_equipment": 1.0,
+            "same_model": 0.8,
+            "same_manufacturer_and_type": 0.6,
+            "same_equipment_type": 0.45,
+            "same_subclass": 0.30,
+            "same_main_class": 0.15,
+            "unrelated": 0.0,
+            "indeterminate": 0.0,
+        }
+    )
 
 
 @dataclass
@@ -69,9 +86,41 @@ class EmbeddingConfig:
 
 @dataclass
 class ScoringConfig:
-    """Cause-scoring stage options (algorithm is a later milestone)."""
+    """Cause-scoring stage options (deterministic, documented methods)."""
 
     probability_method: str = "proportional"
+    support_method: str = "similarity-weighted-share-v1"
+    confidence_high_min_count: int = 5
+    confidence_high_min_denominator: float = 4.0
+    confidence_medium_min_count: int = 3
+    confidence_medium_min_denominator: float = 2.0
+
+
+@dataclass
+class FailureMiningConfig:
+    """Failure-mode clustering thresholds (lexical, deterministic)."""
+
+    lexical_threshold: float = 0.55
+    symptom_attach_threshold: float = 0.40
+    lexical_weight: float = 0.7
+    tech_context_weight: float = 0.3
+
+
+@dataclass
+class CauseMiningConfig:
+    """Cause/repair mining options."""
+
+    include_mechanism_causes: bool = True
+    max_actions_per_cause: int = 8
+
+
+@dataclass
+class EnrichmentConfig:
+    """Optional batch enrichment (default off; never required)."""
+
+    provider: str = "none"
+    model: str | None = None
+    max_records_per_scope: int = 20
 
 
 @dataclass
@@ -93,6 +142,9 @@ class EngineConfig:
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     scoring: ScoringConfig = field(default_factory=ScoringConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
+    failure_mining: FailureMiningConfig = field(default_factory=FailureMiningConfig)
+    cause_mining: CauseMiningConfig = field(default_factory=CauseMiningConfig)
+    enrichment: EnrichmentConfig = field(default_factory=EnrichmentConfig)
 
     @classmethod
     def default(cls) -> EngineConfig:
@@ -114,6 +166,9 @@ class EngineConfig:
             "embedding": EmbeddingConfig,
             "scoring": ScoringConfig,
             "output": OutputConfig,
+            "failure_mining": FailureMiningConfig,
+            "cause_mining": CauseMiningConfig,
+            "enrichment": EnrichmentConfig,
         }
         unknown = set(payload) - set(known)
         if unknown:

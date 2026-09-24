@@ -16,6 +16,7 @@ from maintenance_troubleshooting.domain.evidence import (
     RepairEvidence,
 )
 from maintenance_troubleshooting.domain.failure import (
+    CanonicalFailureMode,
     FailureInterpretation,
     FailureMechanism,
     FailureMode,
@@ -33,12 +34,23 @@ from maintenance_troubleshooting.domain.metrics import (
     ProbabilityMethod,
     normalize_probabilities,
 )
+from maintenance_troubleshooting.domain.normalized import NormalizedRecord
 from maintenance_troubleshooting.domain.records import MaintenanceRecord
+from maintenance_troubleshooting.domain.repairs import (
+    ActionCategory,
+    ActionRole,
+    RepairAction,
+)
+from maintenance_troubleshooting.domain.run import AnalysisRun
 
 __all__ = [
     "DEFAULT_PROBABILITY_SEMANTICS",
     "EXTRA_LEVEL_NAMES",
     "TECHNICAL_LEVEL_NAMES",
+    "ActionCategory",
+    "ActionRole",
+    "AnalysisRun",
+    "CanonicalFailureMode",
     "CauseProbability",
     "Confidence",
     "Equipment",
@@ -48,10 +60,12 @@ __all__ = [
     "FailureMode",
     "FailureProvenance",
     "MaintenanceRecord",
+    "NormalizedRecord",
     "OccurrenceRate",
     "ProbabilityMethod",
     "RecommendedAction",
     "RelevanceBasis",
+    "RepairAction",
     "RepairEvidence",
     "SupportBreakdown",
     "TechnicalTree",

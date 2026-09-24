@@ -1,57 +1,71 @@
 # Architecture
 
-## Pipeline
+## Two phases
 
 ```text
-Excel workbook (.xlsx)
-  ↓
-Input Adapter (inputs/excel.py)
-  · configurable Persian column mapping
-  · equipment codes preserved as identifiers
-  · raw row values retained
-  ↓
-Canonical Records (domain/records.py)
-  · one MaintenanceRecord per row
-  · stable record IDs (inputs/record_ids.py)
-  ↓
-Data Quality (quality/)
-  · validation, missing-field analysis, duplicates,
-    text-quality assessment, failure-mode consistency
-  · original data never silently repaired
-  ↓
-Text Processing (text/)
-  · Persian-aware normalization / tokenization / canonicalization
-  · provider-independent similarity + embedding interfaces
-  ↓
-Technical Similarity (similarity/)
-  · structural classification of technical-tree overlap
-  · extensible scorer interface (final ranking is a later milestone)
-  ↓
-Failure Analysis (domain/failure.py + future pipeline stages)
-  · recorded failure mode vs observed symptom vs inferred mechanism
-  ↓
-Cause Evidence (domain/evidence.py, domain/causes.py)
-  · every candidate cause points at its source records
-  ↓
-Troubleshooting Knowledge Base (outputs/)
-  · JSON-serializable, UI-independent
-  ↓
-Output Adapter (outputs/ + CLI export)
+Phase A — offline batch knowledge generation (may take a long time):
+
+Raw Maintenance Database / Excel
+  ↓  InputAdapter + RecordParser (inputs/)
+Canonical Records (stable IDs; deterministic fallbacks, never dropped)
+  ↓  Normalizer (text/)
+Normalized copies (originals untouched)
+  ↓  DataQualityAnalyzer (quality/)
+Quality report + valid (minable) subset
+  ↓  EquipmentAnalyzer (domain/equipment.py)
+Equipment entities (identity = کد فرایندی; consensus t1..t5)
+  ↓  FailureModeAnalyzer (stages/failure_modes.py)
+Canonical failure modes (original / normalized / canonical triple)
+  ↓  SimilarityAnalyzer (similarity/)
+Equipment similarity matrix (configurable weights + reasons)
+  ↓  EvidenceMiner (stages/evidence.py)
+Weighted per-scope evidence (same-canonical-mode only)
+  ↓  CauseMiner (stages/causes.py)
+Candidate causes (explicit / mechanism / inferred kinds)
+  ↓  RepairActionMiner (stages/repairs.py)
+Structured actions (taxonomy + diagnostic/corrective/verification)
+  ↓  [optional] KnowledgeEnrichmentProvider (enrichment/)
+Validated structured suggestions (never direct DB writes)
+  ↓  KnowledgeSynthesizer (stages/synthesis.py)
+Ranked guides, support %, confidence, probabilities, safety
+  ↓  OutputDatabaseWriter (stages/writer.py)
+NEW troubleshooting SQLite database (atomic: tmp → validate → replace)
+
+Phase B — runtime querying (fast, no mining):
+
+UI / API → TroubleshootingRepository → indexed SQLite reads → result
 ```
+
+The runtime never reads Excel, clusters records, computes similarity,
+extracts causes/actions, or calls an LLM for basic retrieval.
 
 ## Module responsibilities
 
 | Module | Owns | Must not |
 |---|---|---|
-| `domain/` | dataclasses for equipment, records, failures, evidence, causes, guides, metrics | import I/O, ML, or host code |
-| `similarity/` | structural technical-tree classification + scorer protocol | final ranking weights |
+| `domain/` | dataclasses for equipment, records, failures, evidence, causes, guides, repairs, runs, metrics | import I/O, ML, or host code |
+| `stages/` | explicit batch stages (parse → mine → synthesize → write) | UI or host concerns |
+| `similarity/` | structural technical-tree classification + equipment weight matrix | location/process similarity |
 | `text/` | normalization/tokenization/canonicalization + similarity/embedding protocols | any specific LLM/embedding SDK |
 | `quality/` | validation and quality reports over canonical records | mutate source records |
 | `inputs/` | Excel reading, column mapping, record-ID strategies | host paths, host config |
 | `outputs/` | knowledge-base model + JSON serialization | UI or HTTP concerns |
-| `config.py` | `EngineConfig` sections | env vars, host settings |
-| `pipeline.py` | `analyze_workbook` orchestration + future evidence/ranking protocols | host adapters |
-| `cli.py` | `inspect/validate/analyze/export` commands | internal pipeline details leaking to callers |
+| `enrichment/` | optional provider boundary (NoOp default, fake test double) | direct SQLite writes, API keys in core |
+| `runtime/` | read-only repository over generated databases | mining logic |
+| `config.py` | `EngineConfig` sections (input … enrichment) | env vars, host settings |
+| `pipeline.py` | `analyze_workbook` orchestration | host adapters |
+| `cli.py` | `inspect/validate/analyze/export/inspect-output` commands | internal pipeline details leaking to callers |
+
+## LLM policy
+
+- Allowed during Phase A batch generation, never required (default
+  `none` works fully offline).
+- Never required for Phase B runtime querying.
+- Isolated behind `KnowledgeEnrichmentProvider`; bounded inputs,
+  structured outputs, validation before synthesis, no direct DB writes.
+- No provider SDK in core dependencies; no API keys in core config.
+- The output database is provider-independent (enrichment only fills
+  `enriched_label` / extra inferred candidates + run metadata).
 
 ## Key design rules
 

@@ -1,4 +1,4 @@
-"""Command-line boundary: inspect / validate / analyze / export.
+"""Command-line boundary: inspect / validate / analyze / export / inspect-output.
 
 The CLI belongs to the package: a future UI calls the Python API or these
 commands and never needs to know the internal pipeline layout.
@@ -14,6 +14,7 @@ from maintenance_troubleshooting.inputs import ColumnMapping, ExcelMaintenanceRe
 from maintenance_troubleshooting.inputs.record_ids import PrefixNumberRecordId
 from maintenance_troubleshooting.pipeline import analyze_workbook
 from maintenance_troubleshooting.quality import DuplicateDetector, RecordValidator
+from maintenance_troubleshooting.runtime import TroubleshootingRepository
 from maintenance_troubleshooting.version import __version__
 
 
@@ -34,14 +35,33 @@ def build_parser() -> argparse.ArgumentParser:
     validate.add_argument("workbook", help="Path to the .xlsx workbook.")
     validate.add_argument("--sheet", default=None, help="Sheet name (default: active).")
 
-    analyze = sub.add_parser("analyze", help="Run the analysis pipeline.")
+    analyze = sub.add_parser(
+        "analyze", help="Run the batch pipeline into a knowledge database."
+    )
     analyze.add_argument("workbook", help="Path to the .xlsx workbook.")
     analyze.add_argument("--sheet", default=None, help="Sheet name (default: active).")
+    analyze.add_argument(
+        "-o",
+        "--output",
+        default="maintenance_troubleshooting.db",
+        help="Output SQLite path (written atomically).",
+    )
+    analyze.add_argument(
+        "--enrichment",
+        choices=["none"],
+        default="none",
+        help="Batch enrichment provider (default works without any LLM).",
+    )
 
     export = sub.add_parser("export", help="Analyze and write the knowledge base JSON.")
     export.add_argument("workbook", help="Path to the .xlsx workbook.")
     export.add_argument("--sheet", default=None, help="Sheet name (default: active).")
     export.add_argument("-o", "--output", required=True, help="Output JSON path.")
+
+    show = sub.add_parser("inspect-output", help="Inspect a knowledge database.")
+    show.add_argument("database", help="Path to the .db file.")
+    show.add_argument("--equipment", default=None, help="Show one equipment's guides.")
+    show.add_argument("--failure-mode", default=None, help="Filter to one failure mode.")
     return parser
 
 
@@ -79,28 +99,29 @@ def cmd_validate(workbook: str, sheet: str | None) -> int:
     print(quality.summary())
     for issue in quality.issues:
         print(f"[{issue.severity.value}] {issue.record_id} {issue.field}: {issue.message}")
-    for skipped in result.report.skipped_rows:
-        print(f"[error] row {skipped.row_number}: {skipped.reason}")
-    failed = bool(quality.errors()) or bool(result.report.skipped_rows)
+    for problem in result.report.row_problems:
+        print(f"[info] row {problem.row_number}: {problem.reason}")
+    failed = bool(quality.errors())
     return 1 if failed else 0
 
 
-def cmd_analyze(workbook: str, sheet: str | None) -> int:
-    """Run the pipeline and print a summary."""
+def cmd_analyze(workbook: str, sheet: str | None, output: str, enrichment: str) -> int:
+    """Run the batch pipeline into a SQLite knowledge database."""
+    if enrichment != "none":  # pragma: no cover - argparse choices guard this
+        print(f"unknown enrichment provider: {enrichment}")
+        return 2
     config = EngineConfig.default()
     if sheet is not None:
         config.input.sheet_name = sheet
-    result = analyze_workbook(workbook, configuration=config)
+    result = analyze_workbook(workbook, configuration=config, output_path=output)
     print(f"records: {len(result.records)}")
+    print(f"equipment: {len(result.equipment)}")
+    print(f"failure modes: {len(result.failure_modes)}")
+    print(f"guides: {len(result.guides)}")
     print(result.quality_report.summary())
     for warning in result.warnings:
         print(f"warning: {warning}")
-    if result.knowledge_base is not None:
-        print(
-            "knowledge base: shell with "
-            f"{result.knowledge_base.record_count} source records "
-            "(guide ranking arrives in a later milestone)"
-        )
+    print(f"wrote {output}")
     return 0
 
 
@@ -118,17 +139,72 @@ def cmd_export(workbook: str, sheet: str | None, output: str) -> int:
     return 0
 
 
+def cmd_inspect_output(
+    database: str, equipment: str | None, failure_mode: str | None
+) -> int:
+    """Inspect a generated knowledge database (reads only, no mining)."""
+    try:
+        repository = TroubleshootingRepository(database)
+    except Exception as exc:
+        print(f"cannot open database: {exc}")
+        return 1
+    with repository:
+        meta = repository.metadata()
+        print(
+            f"engine {meta.get('engine_version', '?')} / "
+            f"schema {meta.get('schema_version', '?')}"
+        )
+        items = repository.list_equipment()
+        if equipment is not None:
+            items = [item for item in items if item.code == equipment]
+            if not items:
+                print(f"unknown equipment: {equipment}")
+                return 1
+        print(f"equipment: {len(items)}")
+        for item in items:
+            print(f"  {item.code} ({item.record_count} records)")
+            modes = repository.list_failure_modes(item.code)
+            if failure_mode is not None:
+                modes = [m for m in modes if failure_mode in (m.id, m.label)]
+            for mode in modes:
+                print(f"    {mode.id}: {mode.label} ({mode.record_count} records)")
+                guide = repository.get_troubleshooting_guide(item.code, mode.id)
+                if guide is None:
+                    continue
+                for cause in guide.causes:
+                    support = (
+                        f"{cause.support_percent:.1f}%"
+                        if cause.support_percent is not None
+                        else "n/a"
+                    )
+                    print(
+                        f"      - {cause.label} [{support}, "
+                        f"{cause.evidence_count} records, "
+                        f"{len(cause.actions)} actions]"
+                    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point (``maintenance-troubleshooting`` console script)."""
+    try:
+        # Persian output on platforms whose console defaults elsewhere.
+        reconfigure = getattr(sys.stdout, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
     args = build_parser().parse_args(argv)
     if args.command == "inspect":
         return cmd_inspect(args.workbook, args.sheet)
     if args.command == "validate":
         return cmd_validate(args.workbook, args.sheet)
     if args.command == "analyze":
-        return cmd_analyze(args.workbook, args.sheet)
+        return cmd_analyze(args.workbook, args.sheet, args.output, args.enrichment)
     if args.command == "export":
         return cmd_export(args.workbook, args.sheet, args.output)
+    if args.command == "inspect-output":
+        return cmd_inspect_output(args.database, args.equipment, args.failure_mode)
     build_parser().error(f"unknown command: {args.command}")
     return 2  # pragma: no cover - argparse exits first
 

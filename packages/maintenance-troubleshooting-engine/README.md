@@ -31,9 +31,13 @@ interfaces, never hard dependencies.
 ```python
 from maintenance_troubleshooting import EngineConfig, analyze_workbook
 
-result = analyze_workbook("maintenance-history.xlsx")
+result = analyze_workbook(
+    "maintenance-history.xlsx",
+    configuration=EngineConfig.default(),
+    output_path="maintenance_troubleshooting.db",
+)
 print(result.quality_report.summary())
-print(f"canonical records: {len(result.records)}")
+print(f"equipment: {len(result.equipment)}, guides: {len(result.guides)}")
 ```
 
 With explicit configuration and column mapping:
@@ -56,32 +60,48 @@ result = analyze_workbook("history.xlsx", configuration=config, column_mapping=m
 maintenance-troubleshooting --help
 maintenance-troubleshooting inspect history.xlsx
 maintenance-troubleshooting validate history.xlsx
-maintenance-troubleshooting analyze history.xlsx
-maintenance-troubleshooting export history.xlsx -o knowledge-base.json
+maintenance-troubleshooting analyze history.xlsx --output knowledge.db [--enrichment none]
+maintenance-troubleshooting inspect-output knowledge.db [--equipment B104] [--failure-mode FM-0001]
 ```
+
+## Two phases
+
+**Phase A (batch, offline):** the CLI `analyze` command runs the full
+stage pipeline (parse → normalize → quality → equipment → failure modes
+→ similarity → evidence → causes → repair actions → [optional]
+enrichment → synthesis) and writes a SQLite troubleshooting database
+atomically. Slow is acceptable; correctness and traceability come first.
+No LLM is required; `--enrichment` selects an optional provider.
+
+**Phase B (runtime, fast):** `TroubleshootingRepository` answers
+equipment → failure modes → guide → causes → actions → evidence with
+indexed SQLite reads. No mining at query time.
 
 ## Layout
 
 ```text
 src/maintenance_troubleshooting/
     __init__.py        # public API (analyze_workbook, domain models, config)
-    cli.py             # inspect / validate / analyze / export
+    cli.py             # inspect / validate / analyze / export / inspect-output
     config.py          # EngineConfig (input/normalization/similarity/...)
-    pipeline.py        # orchestration + future evidence/ranking interfaces
+    pipeline.py        # batch orchestration (build_stages + analyze_workbook)
+    stages/            # explicit batch stages (parse → mine → synthesize → write)
     domain/            # Equipment, MaintenanceRecord, FailureMode, evidence,
-                       #   causes, guides, probability/confidence metrics
-    similarity/        # technical-tree similarity classification (structural,
-                       #   not a final score)
+                       #   causes, guides, repairs, runs, probability/confidence metrics
+    similarity/        # technical-tree similarity classification + weights
     text/              # Persian-aware normalizer/tokenizer/canonicalizer,
                        #   provider-independent similarity + embedding interfaces
     quality/           # validation, duplicates, text-quality, consistency
     inputs/            # Excel reader, configurable column mapping, record IDs
     outputs/           # TroubleshootingKnowledgeBase (JSON-serializable)
+    enrichment/        # optional provider boundary (NoOp default, fake double)
+    runtime/           # read-only TroubleshootingRepository for future UIs
 tests/                 # synthetic fixtures only — no real customer data
 docs/
     architecture.md
     data-contract.md
     algorithm-principles.md
+    database-schema.md
 ```
 
 ## What the percentages mean
