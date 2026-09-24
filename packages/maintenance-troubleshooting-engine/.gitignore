@@ -1,0 +1,12 @@
+# Local build/test artifacts (belt and braces; the host repo .gitignore
+# already covers most of these, but this file keeps the package
+# self-describing for extraction into its own repository).
+.venv/
+build/
+dist/
+*.egg-info/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.log

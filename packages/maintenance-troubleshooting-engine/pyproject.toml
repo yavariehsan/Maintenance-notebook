@@ -1,0 +1,62 @@
+[project]
+name = "maintenance-troubleshooting-engine"
+version = "0.1.0"
+description = "Standalone engine for mining maintenance history and generating troubleshooting guides."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+    { name = "Maintenance AI Agent contributors" },
+]
+keywords = ["maintenance", "troubleshooting", "reliability", "text-mining"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Manufacturing",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+]
+dependencies = [
+    # Only hard dependency: reading .xlsx workbooks (pure Python).
+    # Everything else (ML/AI providers) is an optional interface.
+    "openpyxl>=3.1,<4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "ruff>=0.8",
+    "mypy>=1.11",
+    "types-openpyxl>=3.1",
+]
+
+[project.scripts]
+maintenance-troubleshooting = "maintenance_troubleshooting.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/maintenance_troubleshooting"]
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+ignore = [
+    "E501",  # line too long (mirrors host repo convention)
+    "E402",
+    "F541",
+]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+show_error_codes = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
