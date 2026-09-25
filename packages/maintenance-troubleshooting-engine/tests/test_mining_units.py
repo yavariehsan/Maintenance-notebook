@@ -127,3 +127,63 @@ def test_location_and_process_never_drive_similarity() -> None:
     # Location/process trees are not even inputs to classification.
     assert classify_technical_similarity(workshop, compressor) is Cat.UNRELATED
     assert classify_technical_similarity(workshop, workshop) is Cat.SAME_EQUIPMENT_TYPE
+
+
+def _clustered(modes: list[tuple[str, str]]) -> dict[str, str]:
+    """Cluster (record_id, raw_mode) pairs; return record → mode key."""
+    records = [
+        MaintenanceRecord(
+            record_id=rid,
+            equipment_code="B104",
+            request_description="متن",
+            failure_mode_recorded=mode,
+            technical_tree=TechnicalTree(t1="c", t2="s", t3="t", t4="m", t5="x"),
+        )
+        for rid, mode in modes
+    ]
+    context = _context_with(records)
+    context = FailureModeAnalyzer().run(context)
+    return dict(context.record_failure_mode)
+
+
+def test_real_sample_merge_equivalent_tool_change_wordings() -> None:
+    """'تعویض ابزار' and 'مشکل در تعویض ابزار (تعویض ابزار)' must merge."""
+    assignment = _clustered(
+        [("R-1", "تعویض ابزار"), ("R-2", "مشکل در تعویض ابزار (تعویض ابزار)")]
+    )
+    assert assignment["R-1"] == assignment["R-2"]
+
+
+def test_real_sample_split_tool_vs_pallet() -> None:
+    """Tool-change and pallet-change wordings must stay separate."""
+    assignment = _clustered(
+        [
+            ("R-1", "مشکل در تعویض ابزار (تعویض ابزار)"),
+            ("R-2", "مشکل در تعویض پالت (تعویض پالت)"),
+        ]
+    )
+    assert assignment["R-1"] != assignment["R-2"]
+
+
+def test_real_sample_tag_veto_blocks_monitoring_tool_chain() -> None:
+    """Monitoring errors must not chain into the tool-change cluster."""
+    assignment = _clustered(
+        [
+            ("R-1", "مشکل در تعویض ابزار (تعویض ابزار)"),
+            ("R-2", "A - contour monitoring error (محور A)"),
+            ("R-3", "Conter Monitoring Error (اسپیندل و رم)"),
+        ]
+    )
+    assert assignment["R-2"] != assignment["R-1"]
+    assert assignment["R-3"] != assignment["R-1"]
+
+
+def test_real_sample_weak_pair_not_boosted_by_same_machine() -> None:
+    """Lexically unrelated modes on identical trees must not merge."""
+    assignment = _clustered(
+        [
+            ("R-1", "مشکل در تعویض ابزار (تعویض ابزار)"),
+            ("R-2", "Encoder Fault (اسپیندل و رم)"),
+        ]
+    )
+    assert assignment["R-1"] != assignment["R-2"]

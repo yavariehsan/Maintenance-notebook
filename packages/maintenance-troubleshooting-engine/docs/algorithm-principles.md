@@ -47,6 +47,11 @@ configurable analytical hierarchy, not unexplained percentages. Every
 evidence row stores its weight *and* its reason
 (`same_manufacturer_and_model+same_failure_mode`, …).
 
+Measured on real data (Sample-1): placeholder `"-"` technical trees
+would have made unrelated equipment "similar" — placeholders are now
+missing values, so such equipment compares as `INDETERMINATE`
+(weight 0) while same-equipment evidence still counts at 1.0.
+
 ## 4. Failure mode vs mechanism
 
 - **Failure mode** = what the operator observes
@@ -80,7 +85,7 @@ reserved for the optional enrichment layer; the deterministic pipeline
 uses canonical-mode membership. The ordering is explicit, configured,
 and tested — not a hidden ranking.
 
-## 6. Text mining stance
+## 6. Text mining stance (validated on real data)
 
 Technician text is Persian/English mixed with model numbers, PLC/CNC
 terms, axis/component names, abbreviations, spelling variation,
@@ -90,3 +95,17 @@ effect (originals always retained); lexical similarity (`TokenSet`,
 character n-grams) is a documented baseline, not a semantic claim.
 Semantic (embedding) matching arrives behind `EmbeddingProvider` as an
 optional enhancement with its own evaluation.
+
+Real-data refinements (each justified by measured false merges/splits):
+
+- Missing-value placeholders (`"-"`, `نامشخص`, …) normalize to missing
+  everywhere — never clusters, mechanisms, or tree levels.
+- Token Jaccard uses IDF weights over distinct mode wordings so generic
+  words (مشکل، تعویض، error) cannot merge distinct failures; the
+  `0.55` threshold is unchanged.
+- Technical context only boosts pairs with lexical substance
+  (`min_lexical_for_tech_boost = 0.35`).
+- Disjoint parenthetical `(category)` tags never merge (tagless wordings
+  may still join any cluster).
+- Cause/action grouping is case-folded (`Axis Control System` ≡
+  `Axis control system`); labels keep the most frequent raw variant.

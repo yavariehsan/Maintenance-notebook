@@ -22,24 +22,55 @@ class TextSimilarity(Protocol):
 
 
 class TokenSetSimilarity:
-    """Jaccard similarity over token sets (order-insensitive baseline)."""
+    """Jaccard similarity over token sets (order-insensitive baseline).
 
-    def __init__(self, tokenizer: Tokenizer) -> None:
+    With ``document_frequencies`` + ``total_documents``, uses IDF-weighted
+    Jaccard so generic words shared across many wordings (خرابی، مشکل،
+    error, …) contribute little, while specific shared terms dominate.
+    Without frequencies it is plain Jaccard (backward compatible).
+    """
+
+    def __init__(
+        self,
+        tokenizer: Tokenizer,
+        document_frequencies: dict[str, int] | None = None,
+        total_documents: int = 0,
+    ) -> None:
         self.tokenizer = tokenizer
+        self.document_frequencies = document_frequencies
+        self.total_documents = total_documents
 
     @property
     def name(self) -> str:
-        return "token-set-jaccard"
+        """Measure name (records whether IDF weighting is active)."""
+        return (
+            "token-set-idf-jaccard"
+            if self.document_frequencies is not None
+            else "token-set-jaccard"
+        )
+
+    def _weight(self, token: str) -> float:
+        """Smoothed IDF weight (1.0 when no frequency table is configured)."""
+        if self.document_frequencies is None:
+            return 1.0
+        import math
+
+        df = self.document_frequencies.get(token, 0)
+        return math.log((self.total_documents + 1) / (df + 1)) + 1.0
 
     def similarity(self, first: str, second: str) -> float:
-        """Jaccard index of the two token sets; ``1.0`` when both are empty."""
+        """(Weighted) Jaccard index; ``1.0`` when both sides are empty."""
         left = set(self.tokenizer.tokenize(first))
         right = set(self.tokenizer.tokenize(second))
         if not left and not right:
             return 1.0
         if not left or not right:
             return 0.0
-        return len(left & right) / len(left | right)
+        if self.document_frequencies is None:
+            return len(left & right) / len(left | right)
+        shared = sum(self._weight(token) for token in left & right)
+        total = sum(self._weight(token) for token in left | right)
+        return shared / total if total > 0 else 0.0
 
 
 class CharacterNGramSimilarity:

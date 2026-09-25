@@ -62,6 +62,8 @@ maintenance-troubleshooting inspect history.xlsx
 maintenance-troubleshooting validate history.xlsx
 maintenance-troubleshooting analyze history.xlsx --output knowledge.db [--enrichment none]
 maintenance-troubleshooting inspect-output knowledge.db [--equipment B104] [--failure-mode FM-0001]
+maintenance-troubleshooting split history.xlsx --test-fraction 0.2 --seed 42 --train-out train.xlsx --test-out test.xlsx
+maintenance-troubleshooting report train.xlsx --database train.db --output-dir report/ [--split-json split.json] [--test-workbook test.xlsx]
 ```
 
 ## Two phases
@@ -102,6 +104,7 @@ docs/
     data-contract.md
     algorithm-principles.md
     database-schema.md
+    validation.md      # real-data validation process (workbook stays external)
 ```
 
 ## What the percentages mean

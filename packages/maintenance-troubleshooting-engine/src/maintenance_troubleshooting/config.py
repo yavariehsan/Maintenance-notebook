@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any
 
+from maintenance_troubleshooting.inputs.excel import DEFAULT_PLACEHOLDERS
 from maintenance_troubleshooting.text.normalization import TextNormalizationOptions
 
 
@@ -19,6 +20,10 @@ class InputConfig:
 
     sheet_name: str | None = None
     header_row: int = 1
+    # Cell texts that mean "missing" (placeholders operators type instead
+    # of leaving a cell blank). Matched case-insensitively after stripping.
+    # Single source of truth: inputs.DEFAULT_PLACEHOLDERS.
+    placeholder_values: tuple[str, ...] = DEFAULT_PLACEHOLDERS
 
 
 @dataclass
@@ -104,6 +109,12 @@ class FailureMiningConfig:
     symptom_attach_threshold: float = 0.40
     lexical_weight: float = 0.7
     tech_context_weight: float = 0.3
+    # Parenthetical "(category)" tags are the operators' own disambiguation:
+    # disjoint non-empty tags never merge (real-data finding: otherwise a
+    # single shared action word bridges whole subsystem families, e.g.
+    # pallet-clamp records chained into the tool-change cluster).
+    # Tagless wordings may still join any cluster.
+    min_lexical_for_tech_boost: float = 0.35
 
 
 @dataclass

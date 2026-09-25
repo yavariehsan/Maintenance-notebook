@@ -5,10 +5,19 @@ texts are clustered with union-find over a combined lexical +
 technical-context score; records without any mode text attach via symptom
 similarity or become explicit ``unclassified`` singletons. Every record
 keeps its original / normalized / canonical triple.
+
+Two real-data guards keep generic wording from chaining distinct failures
+together (see docs/algorithm-principles.md):
+
+- technical context only boosts pairs that already share lexical
+  substance (``min_lexical_for_tech_boost``);
+- disjoint non-empty parenthetical category tags never merge (tagless
+  wordings may still join any cluster).
 """
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 
 from maintenance_troubleshooting.domain.failure import CanonicalFailureMode
@@ -19,6 +28,17 @@ from maintenance_troubleshooting.text import (
     SimpleTokenizer,
     TokenSetSimilarity,
 )
+
+_TAG_PATTERN = re.compile(r"\(([^()]*)\)")
+
+
+def extract_tags(text: str) -> set[str]:
+    """Parenthetical category tags, e.g. ``{"تعویض ابزار"}``.
+
+    Workbook labels follow a ``Label (category)`` convention; tags are a
+    separate, documented merge signal (never the label itself).
+    """
+    return {match.strip().lower() for match in _TAG_PATTERN.findall(text or "") if match.strip()}
 
 
 class _UnionFind:
@@ -55,7 +75,28 @@ class FailureModeAnalyzer:
         """Mine modes; map every valid record to a canonical mode key."""
         mining = context.config.failure_mining
         tokenizer = SimpleTokenizer()
-        token_similarity = TokenSetSimilarity(tokenizer)
+        # IDF weights over DISTINCT normalized mode wordings: generic words
+        # shared across many wordings must not merge distinct failures.
+        mode_texts = sorted(
+            {
+                context.normalized[record.record_id].normalized_failure_mode
+                for record in context.valid_records
+                if context.normalized[record.record_id].normalized_failure_mode
+            }
+        )
+        frequencies: Counter[str] = Counter()
+        for text in mode_texts:
+            for token in set(tokenizer.tokenize(text)):
+                frequencies[token] += 1
+        token_similarity = TokenSetSimilarity(
+            tokenizer,
+            document_frequencies=dict(frequencies),
+            total_documents=len(mode_texts),
+        )
+        # Symptom attach uses PLAIN Jaccard: the IDF table above is weighted
+        # over mode wordings, a different population than symptom texts, so
+        # applying it there would be dishonest weighting.
+        symptom_similarity = TokenSetSimilarity(tokenizer)
         ngram_similarity = CharacterNGramSimilarity(
             n=context.config.similarity.char_ngram_n
         )
@@ -74,15 +115,28 @@ class FailureModeAnalyzer:
                 return 0.0
             return sum(1.0 for agree in comparable if agree) / len(comparable)
 
-        def combined(first: str, second: str, first_text: str, second_text: str) -> float:
+        def combined(
+            first: str,
+            second: str,
+            first_text: str,
+            second_text: str,
+            first_raw: str,
+            second_raw: str,
+        ) -> float:
             lexical = max(
                 token_similarity.similarity(first_text, second_text),
                 ngram_similarity.similarity(first_text, second_text),
             )
-            return (
-                mining.lexical_weight * lexical
-                + mining.tech_context_weight * tech_context(first, second)
+            first_tags = extract_tags(first_raw)
+            second_tags = extract_tags(second_raw)
+            if first_tags and second_tags and not (first_tags & second_tags):
+                return 0.0
+            tech = (
+                tech_context(first, second)
+                if lexical >= mining.min_lexical_for_tech_boost
+                else 0.0
             )
+            return mining.lexical_weight * lexical + mining.tech_context_weight * tech
 
         with_mode = [
             rid
@@ -90,25 +144,34 @@ class FailureModeAnalyzer:
             if context.normalized[rid].normalized_failure_mode
         ]
         clusters: dict[str, list[str]] = {}
-        if with_mode:
-            union = _UnionFind(with_mode)
-            for position, first in enumerate(with_mode):
-                first_text = context.normalized[first].normalized_failure_mode
-                for second in with_mode[position + 1 :]:
-                    second_text = context.normalized[second].normalized_failure_mode
-                    if (
-                        combined(first, second, first_text, second_text)
-                        >= mining.lexical_threshold
-                    ):
-                        union.union(first, second)
-            for rid in with_mode:
-                clusters.setdefault(union.find(rid), []).append(rid)
 
         def raw_mode_text(rid: str) -> str:
             record = by_id[rid]
             return (
                 record.failure_mode_recorded or record.proposed_failure_mode or ""
             ).strip()
+
+        if with_mode:
+            union = _UnionFind(with_mode)
+            for position, first in enumerate(with_mode):
+                first_text = context.normalized[first].normalized_failure_mode
+                first_raw = raw_mode_text(first)
+                for second in with_mode[position + 1 :]:
+                    second_text = context.normalized[second].normalized_failure_mode
+                    if (
+                        combined(
+                            first,
+                            second,
+                            first_text,
+                            second_text,
+                            first_raw,
+                            raw_mode_text(second),
+                        )
+                        >= mining.lexical_threshold
+                    ):
+                        union.union(first, second)
+            for rid in with_mode:
+                clusters.setdefault(union.find(rid), []).append(rid)
 
         def symptom_text(rid: str) -> str:
             return context.normalized[rid].normalized_symptom
@@ -122,7 +185,7 @@ class FailureModeAnalyzer:
             best_root, best_score = "", 0.0
             for root, members in clusters.items():
                 exemplar = context.normalized[members[0]].normalized_failure_mode
-                score = token_similarity.similarity(symptom, exemplar)
+                score = symptom_similarity.similarity(symptom, exemplar)
                 if score > best_score:
                     best_root, best_score = root, score
             if best_root and best_score >= mining.symptom_attach_threshold:

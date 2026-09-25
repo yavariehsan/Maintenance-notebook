@@ -32,7 +32,10 @@ class CauseMiner:
         """Group evidence into candidates with frequencies and support."""
         include_mechanisms = context.config.cause_mining.include_mechanism_causes
         by_id = {record.record_id: record for record in context.valid_records}
-        # (scope_equipment, scope_mode, normalized_text) -> evidence indices
+        # (scope_equipment, scope_mode, normalized_text) -> evidence indices.
+        # Grouping keys are case-folded: "Axis Control System" and
+        # "Axis control system" are the same recorded cause (real-data
+        # finding); labels keep the most frequent raw variant.
         groups: dict[tuple[str, str, str], list[int]] = {}
         kinds: dict[tuple[str, str, str], set[str]] = {}
         for index, item in enumerate(context.evidence):
@@ -41,15 +44,20 @@ class CauseMiner:
             candidates: list[tuple[str, str, str]] = []
             if normalized.normalized_cause:
                 candidates.append(
-                    (normalized.normalized_cause, EXPLICITLY_RECORDED, "cause")
+                    (normalized.normalized_cause.casefold(), EXPLICITLY_RECORDED, "cause")
                 )
             if (
                 include_mechanisms
                 and normalized.normalized_mechanism
-                and normalized.normalized_mechanism != normalized.normalized_cause
+                and normalized.normalized_mechanism.casefold()
+                != normalized.normalized_cause.casefold()
             ):
                 candidates.append(
-                    (normalized.normalized_mechanism, TECHNICAL_MECHANISM, "mechanism")
+                    (
+                        normalized.normalized_mechanism.casefold(),
+                        TECHNICAL_MECHANISM,
+                        "mechanism",
+                    )
                 )
             _ = record
             for text, kind, _source in candidates:

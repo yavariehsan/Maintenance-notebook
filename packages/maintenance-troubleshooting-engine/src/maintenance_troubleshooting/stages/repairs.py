@@ -100,6 +100,9 @@ class RepairActionMiner:
                 sentence = normalizer.normalize(original)
                 if not sentence:
                     continue
+                # Dedupe key is case-folded (same action, different casing);
+                # the exemplar keeps the first-seen original wording.
+                fold_key = sentence.casefold()
                 category = classify_sentence(sentence)
                 if category in (ActionCategory.TEST, ActionCategory.MEASURE) and seen_corrective:
                     role = ActionRole.VERIFICATION
@@ -110,7 +113,7 @@ class RepairActionMiner:
                 else:
                     role = ActionRole.CORRECTIVE
                     seen_corrective = True
-                key = (item.scope_equipment, item.scope_failure_mode, sentence)
+                key = (item.scope_equipment, item.scope_failure_mode, fold_key)
                 if record_id not in groups.setdefault(key, []):
                     groups[key].append(record_id)
                 exemplars.setdefault(key, original)

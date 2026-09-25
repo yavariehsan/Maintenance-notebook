@@ -23,6 +23,7 @@ class RecordParser:
             record_id_strategy=PrefixNumberRecordId(),
             sheet_name=context.config.input.sheet_name,
             header_row=context.config.input.header_row,
+            placeholders=context.config.input.placeholder_values,
         )
         result = reader.read(path, context.column_mapping)
         context.records = result.records

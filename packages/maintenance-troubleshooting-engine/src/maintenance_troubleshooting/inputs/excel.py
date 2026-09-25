@@ -26,6 +26,18 @@ from maintenance_troubleshooting.inputs.record_ids import (
     RecordIdStrategy,
 )
 
+#: Cell texts that mean "missing" (matched case-insensitively when stripped).
+DEFAULT_PLACEHOLDERS: tuple[str, ...] = (
+    "-",
+    "–",
+    "—",
+    "نامشخص",
+    "unknown",
+    "n/a",
+    "؟",
+    "?",
+)
+
 #: Canonical field → accepted header names (Persian defaults first).
 DEFAULT_COLUMN_ALIASES: dict[str, list[str]] = {
     # Equipment identity is کد فرایندی (stable process code). تجهیز is the
@@ -99,7 +111,7 @@ DEFAULT_COLUMN_ALIASES: dict[str, list[str]] = {
     "registered_by": ["کاربر ثبت کننده"],
     "delay_cause": ["علت تاخیر"],
     "total_man_hours": ["جمع نفر ساعت"],
-    "request_type": ["نوع درخواست"],
+    "request_type": ["نوع درخواست", "توع درخواست"],
     "stop_time": ["STOP TIME"],
     "stage": ["مرحله"],
     "failure_mode": ["حالت خرابی"],
@@ -157,8 +169,23 @@ def preserve_identifier(value: Any) -> str | None:
     return text or None
 
 
-def _cell_text(value: Any) -> str | None:
-    """Coerce a general cell to stripped text (dates → ISO format)."""
+def _is_placeholder(text: str, placeholders: tuple[str, ...]) -> bool:
+    """Whether a stripped cell text is a missing-value placeholder."""
+    lowered = text.strip().lower()
+    return any(lowered == marker.lower() for marker in placeholders)
+
+
+def _is_placeholder_value(value: Any, placeholders: tuple[str, ...]) -> bool:
+    """Whether an Excel cell holds a missing-value placeholder string."""
+    return isinstance(value, str) and bool(placeholders) and _is_placeholder(value, placeholders)
+
+
+def _cell_text(value: Any, placeholders: tuple[str, ...] = ()) -> str | None:
+    """Coerce a general cell to stripped text (dates → ISO format).
+
+    Placeholder values (``"-"``, ``"نامشخص"``, …) become ``None`` so every
+    downstream stage treats them as missing, never as real content.
+    """
     if value is None:
         return None
     if isinstance(value, bool):
@@ -168,7 +195,9 @@ def _cell_text(value: Any) -> str | None:
     if isinstance(value, date):
         return value.isoformat()
     text = str(value).strip()
-    return text or None
+    if not text or _is_placeholder(text, placeholders):
+        return None
+    return text
 
 
 @dataclass
@@ -281,10 +310,12 @@ class ExcelMaintenanceReader:
         record_id_strategy: RecordIdStrategy | None = None,
         sheet_name: str | None = None,
         header_row: int = 1,
+        placeholders: tuple[str, ...] | None = None,
     ) -> None:
         self.record_id_strategy = record_id_strategy or PrefixNumberRecordId()
         self.sheet_name = sheet_name
         self.header_row = header_row
+        self.placeholders = placeholders if placeholders is not None else DEFAULT_PLACEHOLDERS
 
     def read(
         self, path: str | Path, column_mapping: ColumnMapping | None = None
@@ -332,12 +363,22 @@ class ExcelMaintenanceReader:
         records: list[MaintenanceRecord] = []
         for offset, row in enumerate(rows[header_index + 1 :], start=header_index + 2):
             report.total_rows += 1
-            cells = dict(zip(headers, row))
+            raw_cells = dict(zip(headers, row))
+            # Placeholders ("-", "نامشخص", …) become missing for extraction,
+            # while raw_cells keeps the originals for traceability.
+            cells = {
+                header: (
+                    None
+                    if _is_placeholder_value(value, self.placeholders)
+                    else value
+                )
+                for header, value in raw_cells.items()
+            }
             if all(v is None or (isinstance(v, str) and not v.strip()) for v in row):
                 report.empty_rows += 1
                 continue
             record, problem = self._build_record(
-                cells, resolved.field_to_header, offset, title
+                cells, resolved.field_to_header, offset, title, raw_cells
             )
             records.append(record)
             report.records_built += 1
@@ -357,6 +398,7 @@ class ExcelMaintenanceReader:
         field_to_header: dict[str, str],
         row_number: int,
         sheet: str,
+        raw_cells: dict[str, Any] | None = None,
     ) -> tuple[MaintenanceRecord, RowProblem | None]:
         """Build one canonical record, falling back deterministically.
 
@@ -399,7 +441,7 @@ class ExcelMaintenanceReader:
             for name in DATE_FIELDS
             if (text := _cell_text(get(name))) is not None
         }
-        raw = {header: cells.get(header) for header in cells}
+        raw = {header: (raw_cells or cells).get(header) for header in cells}
         mapped_headers = set(field_to_header.values())
         extra = {h: v for h, v in raw.items() if h not in mapped_headers and v is not None}
 

@@ -13,7 +13,10 @@ from maintenance_troubleshooting.stages.repairs import (
     classify_sentence,
     split_sentences,
 )
-from maintenance_troubleshooting.stages.similarity import SimilarityAnalyzer
+from maintenance_troubleshooting.stages.similarity import (
+    SimilarityAnalyzer,
+    category_reason,
+)
 from maintenance_troubleshooting.stages.synthesis import KnowledgeSynthesizer
 from maintenance_troubleshooting.stages.writer import OutputDatabaseWriter
 
@@ -31,6 +34,7 @@ __all__ = [
     "RepairActionMiner",
     "SimilarityAnalyzer",
     "Stage",
+    "category_reason",
     "classify_sentence",
     "split_sentences",
 ]

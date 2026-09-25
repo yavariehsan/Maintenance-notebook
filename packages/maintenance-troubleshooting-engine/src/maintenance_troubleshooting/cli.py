@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 from maintenance_troubleshooting.config import EngineConfig
 from maintenance_troubleshooting.inputs import ColumnMapping, ExcelMaintenanceReader
@@ -62,6 +63,31 @@ def build_parser() -> argparse.ArgumentParser:
     show.add_argument("database", help="Path to the .db file.")
     show.add_argument("--equipment", default=None, help="Show one equipment's guides.")
     show.add_argument("--failure-mode", default=None, help="Filter to one failure mode.")
+
+    split = sub.add_parser(
+        "split", help="Equipment-level train/test split (no leakage)."
+    )
+    split.add_argument("workbook", help="Path to the .xlsx workbook.")
+    split.add_argument("--test-fraction", type=float, default=0.2)
+    split.add_argument("--seed", type=int, default=42)
+    split.add_argument("--train-out", required=True, help="Train workbook path.")
+    split.add_argument("--test-out", required=True, help="Test workbook path.")
+    split.add_argument(
+        "--split-out",
+        default=None,
+        help="Split description JSON path (for report --split-json).",
+    )
+
+    report = sub.add_parser("report", help="Validation report (JSON + Markdown).")
+    report.add_argument("workbook", help="Workbook the database was built from.")
+    report.add_argument("--database", required=True, help="Knowledge database path.")
+    report.add_argument("--output-dir", required=True, help="Report output directory.")
+    report.add_argument("--split-json", default=None, help="Split description JSON.")
+    report.add_argument(
+        "--test-workbook",
+        default=None,
+        help="Held-out workbook for the evaluation section.",
+    )
     return parser
 
 
@@ -185,6 +211,126 @@ def cmd_inspect_output(
     return 0
 
 
+def cmd_split(
+    workbook: str,
+    test_fraction: float,
+    seed: int,
+    train_out: str,
+    test_out: str,
+    split_out: str | None,
+) -> int:
+    """Split a workbook at equipment level; prove zero leakage."""
+    import json
+
+    reader = _reader(None)
+    try:
+        result = reader.read(workbook, ColumnMapping.default())
+    except ValueError as exc:
+        print(f"schema error: {exc}")
+        return 1
+    from maintenance_troubleshooting.validation import (
+        check_leakage,
+        split_equipment,
+        write_split_workbooks,
+    )
+
+    codes = sorted({record.equipment_code for record in result.records if record.equipment_code})
+    try:
+        split = split_equipment(codes, test_fraction=test_fraction, seed=seed)
+    except ValueError as exc:
+        print(f"cannot split: {exc}")
+        return 1
+    leakage = check_leakage(split)
+    if leakage:
+        print(f"leakage detected (refusing): {leakage}")
+        return 1
+    counts = write_split_workbooks(workbook, split, train_out, test_out)
+    print(f"train equipment: {len(split.train_codes)} ({counts['train_rows']} rows)")
+    print(f"test equipment: {len(split.test_codes)} ({counts['test_rows']} rows)")
+    print("leakage: none")
+    if split_out is not None:
+        path = Path(split_out)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(split.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        print(f"wrote {path}")
+    return 0
+
+
+def cmd_report(
+    workbook: str,
+    database: str,
+    output_dir: str,
+    split_json: str | None,
+    test_workbook: str | None,
+) -> int:
+    """Build the validation report (JSON + Markdown) for a database."""
+    import json
+    import time
+
+    from maintenance_troubleshooting.pipeline import analyze_workbook
+    from maintenance_troubleshooting.validation import (
+        build_report,
+        evaluate_test_records,
+    )
+    from maintenance_troubleshooting.validation.split import EquipmentSplit
+
+    started = time.monotonic()
+    config = EngineConfig.default()
+    result = analyze_workbook(workbook, configuration=config)
+    split = None
+    if split_json is not None:
+        split = EquipmentSplit.from_dict(
+            json.loads(Path(split_json).read_text(encoding="utf-8"))
+        )
+    evaluation = None
+    if test_workbook is not None:
+        from maintenance_troubleshooting.stages.base import PipelineContext
+        from maintenance_troubleshooting.stages.causes import CauseMiner
+        from maintenance_troubleshooting.stages.equipment import EquipmentAnalyzer
+        from maintenance_troubleshooting.stages.evidence import EvidenceMiner
+        from maintenance_troubleshooting.stages.failure_modes import (
+            FailureModeAnalyzer,
+        )
+        from maintenance_troubleshooting.stages.normalization import Normalizer
+        from maintenance_troubleshooting.stages.parsing import RecordParser
+        from maintenance_troubleshooting.stages.quality import DataQualityAnalyzer
+        from maintenance_troubleshooting.stages.repairs import RepairActionMiner
+        from maintenance_troubleshooting.stages.similarity import SimilarityAnalyzer
+        from maintenance_troubleshooting.stages.synthesis import KnowledgeSynthesizer
+
+        train_context = PipelineContext(config=config, input_path=workbook)
+        for stage in (
+            RecordParser(),
+            Normalizer(),
+            DataQualityAnalyzer(),
+            EquipmentAnalyzer(),
+            FailureModeAnalyzer(),
+            SimilarityAnalyzer(),
+            EvidenceMiner(),
+            CauseMiner(),
+            RepairActionMiner(),
+            KnowledgeSynthesizer(),
+        ):
+            train_context = stage.run(train_context)
+        test_reader = _reader(None)
+        test_records = test_reader.read(test_workbook, ColumnMapping.default()).records
+        evaluation = evaluate_test_records(test_records, train_context, result)
+    report = build_report(
+        result,
+        database,
+        split=split,
+        evaluation=evaluation,
+        timing_seconds=time.monotonic() - started,
+    )
+    paths = report.save(output_dir)
+    print(f"wrote {paths['json']}")
+    print(f"wrote {paths['markdown']}")
+    print(f"leakage: {report.leakage or 'none'}")
+    return 0 if not report.leakage else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point (``maintenance-troubleshooting`` console script)."""
     try:
@@ -205,6 +351,23 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_export(args.workbook, args.sheet, args.output)
     if args.command == "inspect-output":
         return cmd_inspect_output(args.database, args.equipment, args.failure_mode)
+    if args.command == "split":
+        return cmd_split(
+            args.workbook,
+            args.test_fraction,
+            args.seed,
+            args.train_out,
+            args.test_out,
+            args.split_out,
+        )
+    if args.command == "report":
+        return cmd_report(
+            args.workbook,
+            args.database,
+            args.output_dir,
+            args.split_json,
+            args.test_workbook,
+        )
     build_parser().error(f"unknown command: {args.command}")
     return 2  # pragma: no cover - argparse exits first
 

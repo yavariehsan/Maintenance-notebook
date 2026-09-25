@@ -3,6 +3,7 @@
 from maintenance_troubleshooting.inputs.excel import (
     DATE_FIELDS,
     DEFAULT_COLUMN_ALIASES,
+    DEFAULT_PLACEHOLDERS,
     REQUIRED_FIELDS,
     ColumnMapping,
     ExcelMaintenanceReader,
@@ -20,6 +21,7 @@ from maintenance_troubleshooting.inputs.record_ids import (
 
 __all__ = [
     "DEFAULT_COLUMN_ALIASES",
+    "DEFAULT_PLACEHOLDERS",
     "DATE_FIELDS",
     "REQUIRED_FIELDS",
     "ColumnMapping",

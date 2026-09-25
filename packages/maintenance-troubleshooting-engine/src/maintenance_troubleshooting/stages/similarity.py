@@ -26,6 +26,11 @@ _CATEGORY_REASONS = {
 }
 
 
+def category_reason(category: TechnicalSimilarityCategory) -> str:
+    """Human reason for a similarity category (stored on evidence rows)."""
+    return _CATEGORY_REASONS[category]
+
+
 class SimilarityAnalyzer:
     """Precompute pairwise technical support weights between equipment."""
 
