@@ -40,4 +40,16 @@ export const QUERY_KEYS = {
   episodeProfiles: ['podcasts', 'episode-profiles'] as const,
   speakerProfiles: ['podcasts', 'speaker-profiles'] as const,
   languages: ['languages'] as const,
+  troubleshootingStatus: ['troubleshooting', 'status'] as const,
+  troubleshootingEquipment: ['troubleshooting', 'equipment'] as const,
+  troubleshootingEquipmentDetail: (code: string) =>
+    ['troubleshooting', 'equipment', code] as const,
+  troubleshootingFailureModes: (code: string) =>
+    ['troubleshooting', 'equipment', code, 'failure-modes'] as const,
+  troubleshootingGuide: (code: string, modeId: string) =>
+    ['troubleshooting', 'equipment', code, 'failure-modes', modeId] as const,
+  troubleshootingCauses: (code: string, modeId: string) =>
+    ['troubleshooting', 'equipment', code, 'failure-modes', modeId, 'causes'] as const,
+  troubleshootingEvidence: (code: string, modeId: string) =>
+    ['troubleshooting', 'equipment', code, 'failure-modes', modeId, 'evidence'] as const,
 }
