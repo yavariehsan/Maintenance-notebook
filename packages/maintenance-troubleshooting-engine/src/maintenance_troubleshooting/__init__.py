@@ -85,6 +85,7 @@ from maintenance_troubleshooting.quality import (
     TextQualityAssessment,
 )
 from maintenance_troubleshooting.runtime import (
+    TROUBLESHOOTING_SCHEMA_VERSION,
     CauseView,
     EquipmentSummary,
     FailureModeSummary,
@@ -208,6 +209,7 @@ __all__ = [
     "TroubleshootingGuide",
     "TroubleshootingKnowledgeBase",
     "TroubleshootingRepository",
+    "TROUBLESHOOTING_SCHEMA_VERSION",
     "ValidationReport",
     "__version__",
     "analyze_workbook",

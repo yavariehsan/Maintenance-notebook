@@ -7,11 +7,15 @@ from maintenance_troubleshooting.runtime.repository import (
     GuideView,
     TroubleshootingRepository,
 )
+from maintenance_troubleshooting.stages.writer import (
+    SCHEMA_VERSION as TROUBLESHOOTING_SCHEMA_VERSION,
+)
 
 __all__ = [
     "CauseView",
     "EquipmentSummary",
     "FailureModeSummary",
     "GuideView",
+    "TROUBLESHOOTING_SCHEMA_VERSION",
     "TroubleshootingRepository",
 ]

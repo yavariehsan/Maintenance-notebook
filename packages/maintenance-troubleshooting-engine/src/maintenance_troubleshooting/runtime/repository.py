@@ -74,11 +74,17 @@ class GuideView:
 class TroubleshootingRepository:
     """Read-only access to a generated troubleshooting database."""
 
-    def __init__(self, database_path: str | Path) -> None:
+    def __init__(self, database_path: str | Path, *, read_only: bool = False) -> None:
         self.database_path = Path(database_path)
         if not self.database_path.exists():
             raise FileNotFoundError(f"knowledge database not found: {database_path}")
-        self._connection = sqlite3.connect(str(self.database_path))
+        if read_only:
+            # URI mode=ro: the file is never created, locked for writing, or
+            # modified. Host runtimes must use this mode.
+            uri = self.database_path.absolute().as_posix()
+            self._connection = sqlite3.connect(f"file:{uri}?mode=ro", uri=True)
+        else:
+            self._connection = sqlite3.connect(str(self.database_path))
         self._connection.row_factory = sqlite3.Row
 
     def close(self) -> None:

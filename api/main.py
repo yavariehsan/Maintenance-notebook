@@ -47,6 +47,7 @@ from api.routers import (
     speaker_profiles,
     tasks,
     transformations,
+    troubleshooting,
 )
 from api.routers import commands as commands_router
 from open_notebook.database.async_migrate import AsyncMigrationManager
@@ -410,6 +411,9 @@ app.include_router(providers.router, prefix="/api", tags=["providers"])
 app.include_router(capabilities.router, prefix="/api", tags=["capabilities"])
 app.include_router(languages.router, prefix="/api", tags=["languages"])
 app.include_router(maintenance.router, prefix="/api", tags=["maintenance"])
+app.include_router(
+    troubleshooting.router, prefix="/api", tags=["troubleshooting"]
+)
 
 
 @app.get("/")
