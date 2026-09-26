@@ -118,3 +118,17 @@ sections all come from the precomputed database verbatim.
   tests + real-engine aggregate/runtime chain on synthetic fixtures.
 - Frontend: screen tests (list, two-tab detail, guide flow) with mocked
   hooks + API client tests; navigation and locale-parity coverage.
+
+## Native execution (no Docker/WSL)
+
+The supported workflow is native Windows: pinned `surreal.exe` 2.6.5
+(`Start-Maintenance-NoteBook.bat`), `uv run` API, `surreal-commands`
+worker (`--import-modules commands`), `npm run dev`, and the engine as
+an in-worker Python call. Docker files in this repository are optional
+release/deployment support only — nothing in this workflow depends on
+them. Command modules must keep real (non-string) input/output type
+hints: the command registry resolves them at registration, so
+`from __future__ import annotations` is forbidden there. Validated live
+on 2026-09-26 against disposable native services with the real
+`Sample-1.xlsx` (single-file run: 1706 records/13 equipment; two-file
+run: 3412 records, evidence split evenly across both file namespaces).

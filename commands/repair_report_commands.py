@@ -15,9 +15,12 @@ database, never a partial one.
 Permanent problems (unknown run, missing workbook, unreadable input,
 engine configuration) raise ``ValueError`` so the job is marked
 ``failed`` without burning retries; anything else retries.
-"""
 
-from __future__ import annotations
+NOTE: this module must NOT use ``from __future__ import annotations``.
+The surreal-commands registry resolves the command's input/output type
+hints at registration time and cannot resolve postponed (string)
+annotations — no other command module uses the future import either.
+"""
 
 import asyncio
 import os

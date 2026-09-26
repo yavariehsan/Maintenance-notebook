@@ -524,7 +524,7 @@ async def create_run(report_ids: List[str]) -> Dict[str, Any]:
         "manifest: [], status: $status, command_id: NONE, error: NONE, "
         "record_count: NONE, equipment_count: NONE, failure_mode_count: NONE, "
         "guide_count: NONE, created: time::now(), started_at: NONE, "
-        "finished_at: NONE}} RETURN AFTER",
+        "finished_at: NONE} RETURN AFTER",
         {
             "report_ids": [ensure_record_id(item) for item in report_ids],
             "status": RUN_QUEUED,

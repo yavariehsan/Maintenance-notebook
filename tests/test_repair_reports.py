@@ -411,6 +411,59 @@ async def test_stale_run_self_heals_and_unblocks():
     assert any("finished_at" in query for query in seen_updates)
 
 
+# --- SurrealQL statement integrity -----------------------------------------------
+#
+# Mocked persistence cannot catch brace/escaping mistakes in query strings
+# (a doubled ``}}`` in a plain string is a permanent live failure). These
+# tests pin the exact rendered statements.
+
+
+@pytest.mark.asyncio
+async def test_create_run_statement_is_valid_surrealql():
+    seen = []
+
+    async def _repo(query, params=None):
+        seen.append(query)
+        return [_run_row()]
+
+    with patch.object(reports, "repo_query", new_callable=AsyncMock) as mock_repo:
+        mock_repo.side_effect = _repo
+        await reports.create_run(["repair_report:abc123"])
+    (statement,) = seen
+    assert statement == (
+        "CREATE repair_analysis_run CONTENT {report_ids: $report_ids, "
+        "manifest: [], status: $status, command_id: NONE, error: NONE, "
+        "record_count: NONE, equipment_count: NONE, failure_mode_count: NONE, "
+        "guide_count: NONE, created: time::now(), started_at: NONE, "
+        "finished_at: NONE} RETURN AFTER"
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_report_statement_is_valid_surrealql(tmp_path, monkeypatch):
+    monkeypatch.setattr(reports, "REPAIR_REPORTS_FOLDER", str(tmp_path))
+    seen = []
+
+    async def _repo(query, params=None):
+        seen.append(query)
+        return [_report_row()]
+
+    content = _workbook_bytes(_sample_rows(count=1))
+    with patch.object(reports, "repo_query", new_callable=AsyncMock) as mock_repo:
+        mock_repo.side_effect = _repo
+        await reports.create_report("cmms.xlsx", content)
+    (statement,) = seen
+    assert statement == (
+        "CREATE repair_report CONTENT {"
+        "filename: $filename, stored_filename: $stored_filename, "
+        "size_bytes: $size_bytes, sheet: $sheet, column_count: $column_count, "
+        "data_rows: $data_rows, analysis_key: $analysis_key, "
+        "analysis_state: $analysis_state, last_run_id: NONE, "
+        "last_completed_run_id: NONE, last_error: NONE, "
+        "created: time::now(), updated: time::now()} RETURN AFTER"
+    )
+
+
 # --- aggregate builder (pure, no DB) --------------------------------------------
 
 
