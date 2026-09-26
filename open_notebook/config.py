@@ -19,6 +19,14 @@ LANGGRAPH_CHECKPOINT_FILE = f"{sqlite_folder}/checkpoints.sqlite"
 UPLOADS_FOLDER = f"{DATA_FOLDER}/uploads"
 os.makedirs(UPLOADS_FOLDER, exist_ok=True)
 
+# REPAIR-REPORTS FOLDER
+# Raw maintenance/repair-history workbooks uploaded through the
+# گزارشات تعمیر (repair reports) collection. Files are immutable input
+# artifacts for the offline troubleshooting analysis runs; the generated
+# Troubleshooting Database lives under troubleshooting/ instead.
+REPAIR_REPORTS_FOLDER = f"{DATA_FOLDER}/repair-reports"
+os.makedirs(REPAIR_REPORTS_FOLDER, exist_ok=True)
+
 # PODCASTS FOLDER
 # Matches the root that build_episode_output_dir() (commands/podcast_commands.py)
 # creates episode directories under when called with DATA_FOLDER in production.

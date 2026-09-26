@@ -40,6 +40,7 @@ from api.routers import (
     notes,
     podcasts,
     providers,
+    repair_reports,
     search,
     settings,
     source_chat,
@@ -413,6 +414,9 @@ app.include_router(languages.router, prefix="/api", tags=["languages"])
 app.include_router(maintenance.router, prefix="/api", tags=["maintenance"])
 app.include_router(
     troubleshooting.router, prefix="/api", tags=["troubleshooting"]
+)
+app.include_router(
+    repair_reports.router, prefix="/api", tags=["repair-reports"]
 )
 
 

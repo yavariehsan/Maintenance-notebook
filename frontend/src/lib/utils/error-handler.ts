@@ -36,6 +36,7 @@ export const ERROR_MAP: Record<string, string> = {
   "Answer model": "apiErrors.answerModelNotFound",
   "Final answer model": "apiErrors.finalAnswerModelNotFound",
   "No answer generated": "apiErrors.noAnswerGenerated",
+  "An analysis run is already in progress.": "repairReports.analysisInProgress",
 };
 
 /**

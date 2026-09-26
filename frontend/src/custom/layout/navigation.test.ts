@@ -30,14 +30,22 @@ describe('resolveActiveHref', () => {
     expect(resolveActiveHref('/tasks')).toBe('/tasks')
   })
 
+  it('matches the repair reports and troubleshooting guide routes', () => {
+    expect(resolveActiveHref('/repair-reports')).toBe('/repair-reports')
+    expect(resolveActiveHref('/repair-reports/repair_report:abc')).toBe('/repair-reports')
+    expect(resolveActiveHref('/troubleshooting-guide')).toBe('/troubleshooting-guide')
+  })
+
   it('covers every upstream sidebar route', () => {
     const hrefs = customNavigation.map((section) => section.items.map((item) => item.href)).flat()
     expect(hrefs).toEqual([
       '/sources',
+      '/repair-reports',
       '/assets',
       '/notebooks',
       '/search',
       '/maintenance-guide',
+      '/troubleshooting-guide',
       '/tasks',
       '/podcasts',
       '/settings/models',
