@@ -141,10 +141,10 @@ export function TasksScreen() {
                     <td className="h-12 px-4">
                       <div className="flex flex-col overflow-hidden">
                         <span className="font-medium truncate">
-                          {task.source_title || task.source_id || task.job_id}
+                          {task.title || task.source_title || task.source_id || task.job_id}
                         </span>
                         <span className="text-xs text-muted-foreground truncate font-mono">
-                          {task.source_id || task.job_id}
+                          {task.source_id || task.run_id || task.job_id}
                         </span>
                       </div>
                     </td>

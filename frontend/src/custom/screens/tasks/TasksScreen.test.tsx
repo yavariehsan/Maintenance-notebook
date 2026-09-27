@@ -68,6 +68,31 @@ const completedTask: TaskItem = {
   chunks_created: 351,
 }
 
+const runningRepairTask: TaskItem = {
+  job_id: 'command:analysis1',
+  item_type: 'repair_analysis',
+  command_name: 'analyze_repair_reports',
+  run_id: 'repair_analysis_run:run1',
+  title: 'Sample-1.xlsx',
+  status: 'running',
+  processed_chunks: null,
+  total_chunks: null,
+  percentage: null,
+}
+
+const failedRepairTask: TaskItem = {
+  job_id: 'command:analysis2',
+  item_type: 'repair_analysis',
+  command_name: 'analyze_repair_reports',
+  run_id: 'repair_analysis_run:run2',
+  title: 'a.xlsx, b.xlsx',
+  status: 'failed',
+  processed_chunks: null,
+  total_chunks: null,
+  percentage: null,
+  error_message: 'Stored file for report repair_report:zzz is missing.',
+}
+
 function mockQuery(overrides = {}) {
   mockUseTasks.mockReturnValue({
     data: undefined,
@@ -138,6 +163,30 @@ describe('TasksScreen', () => {
     expect(screen.getByText('100%')).toBeDefined()
     expect(screen.getByText('tasks.failed')).toBeDefined()
     expect(screen.getByText('Failed to generate embeddings (batch 1/4)')).toBeDefined()
+  })
+
+  it('shows the repair analysis run alongside embedding jobs', () => {
+    mockQuery({ data: [runningTask, runningRepairTask] })
+    const { container } = render(<TasksScreen />)
+
+    // Same active state on both screens: filenames + run id, no fake %.
+    // (The embedding job keeps its real 3.4%; the repair row adds none.)
+    expect(screen.getByText('Sample-1.xlsx')).toBeDefined()
+    expect(screen.getByText('repair_analysis_run:run1')).toBeDefined()
+    expect(screen.getAllByText(/%/)).toHaveLength(1)
+    expect(container.querySelector('.animate-pulse')).not.toBeNull()
+  })
+
+  it('shows failed repair analysis with its error and run reference', () => {
+    mockQuery({ data: [failedRepairTask] })
+    render(<TasksScreen />)
+
+    expect(screen.getByText('a.xlsx, b.xlsx')).toBeDefined()
+    expect(screen.getByText('repair_analysis_run:run2')).toBeDefined()
+    expect(screen.getByText('tasks.failed')).toBeDefined()
+    expect(
+      screen.getByText('Stored file for report repair_report:zzz is missing.'),
+    ).toBeDefined()
   })
 })
 

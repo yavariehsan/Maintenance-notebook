@@ -5,6 +5,10 @@ export type TaskStatus = 'new' | 'running' | 'completed' | 'failed' | 'canceled'
 export interface TaskItem {
   job_id: string
   item_type: string
+  command_name?: string | null
+  run_id?: string | null
+  /** Display title (repair report filenames for analysis jobs). */
+  title?: string | null
   source_id?: string | null
   source_title?: string | null
   status: TaskStatus

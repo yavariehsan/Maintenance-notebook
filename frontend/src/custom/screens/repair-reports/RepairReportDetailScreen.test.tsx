@@ -1,5 +1,7 @@
+import React from 'react'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RepairReportDetailScreen } from './RepairReportDetailScreen'
 import {
   useRepairReport,
@@ -28,6 +30,27 @@ vi.mock('@/lib/hooks/use-repair-reports', () => ({
 const mockUseReport = vi.mocked(useRepairReport)
 const mockUsePreview = vi.mocked(useRepairReportPreview)
 const mockUseAnalyze = vi.mocked(useStartRepairAnalysis)
+
+function makeWrapper() {
+  const client = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false },
+    },
+  })
+  const spy = vi.spyOn(client, 'invalidateQueries')
+  function Wrapper({ children }: { children: React.ReactNode }) {
+    return <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  }
+  return { Wrapper, spy }
+}
+
+function renderDetail(reportId: string) {
+  const { Wrapper, spy } = makeWrapper()
+  const view = render(<RepairReportDetailScreen reportId={reportId} />, {
+    wrapper: Wrapper,
+  })
+  return { ...view, spy }
+}
 
 const detailFor = (state: RepairReport['analysis_state']): RepairReportDetail => ({
   report: {
@@ -106,7 +129,7 @@ describe('RepairReportDetailScreen', () => {
 
   it('renders exactly the content and analysis tabs', () => {
     mockHooks('not_analyzed')
-    render(<RepairReportDetailScreen reportId="repair_report:abc" />)
+    renderDetail('repair_report:abc')
     expect(screen.getByText('repairReports.contentTab')).toBeInTheDocument()
     expect(screen.getByText('repairReports.analysisTab')).toBeInTheDocument()
     expect(screen.queryByText('repairReports.detailsTab')).not.toBeInTheDocument()
@@ -114,7 +137,7 @@ describe('RepairReportDetailScreen', () => {
 
   it('shows the 10-row preview with headers and Persian text', () => {
     mockHooks('not_analyzed')
-    render(<RepairReportDetailScreen reportId="repair_report:abc" />)
+    renderDetail('repair_report:abc')
     expect(screen.getByText('کد فرایندی')).toBeInTheDocument()
     expect(screen.getByText('عیب')).toBeInTheDocument()
     expect(screen.getByText('repairReports.previewNote')).toBeInTheDocument()
@@ -122,14 +145,14 @@ describe('RepairReportDetailScreen', () => {
 
   it('enables analysis only for not-analyzed reports', () => {
     mockHooks('not_analyzed')
-    render(<RepairReportDetailScreen reportId="repair_report:abc" />)
+    renderDetail('repair_report:abc')
     selectTab('repairReports.analysisTab')
     expect(screen.getByText('repairReports.analyzeButton')).toBeEnabled()
   })
 
   it('disables analysis while processing', () => {
     mockHooks('processing')
-    render(<RepairReportDetailScreen reportId="repair_report:abc" />)
+    renderDetail('repair_report:abc')
     selectTab('repairReports.analysisTab')
     expect(screen.getByText('repairReports.analyzeButton')).toBeDisabled()
     expect(screen.getByText('repairReports.statusProcessingDesc')).toBeInTheDocument()
@@ -137,7 +160,7 @@ describe('RepairReportDetailScreen', () => {
 
   it('disables analysis after completion', () => {
     mockHooks('completed')
-    render(<RepairReportDetailScreen reportId="repair_report:abc" />)
+    renderDetail('repair_report:abc')
     selectTab('repairReports.analysisTab')
     expect(screen.getByText('repairReports.analyzeButton')).toBeDisabled()
     expect(screen.getByText('repairReports.viewGuideHint')).toBeInTheDocument()
@@ -145,8 +168,26 @@ describe('RepairReportDetailScreen', () => {
 
   it('surfaces the failure state with the backend error', () => {
     mockHooks('failed')
-    render(<RepairReportDetailScreen reportId="repair_report:abc" />)
+    renderDetail('repair_report:abc')
     selectTab('repairReports.analysisTab')
     expect(screen.getByText('boom')).toBeInTheDocument()
+  })
+
+  it('refreshes guide caches when polling observes completion', () => {
+    mockHooks('processing')
+    const { rerender, spy } = renderDetail('repair_report:abc')
+    spy.mockClear()
+    mockHooks('completed')
+    rerender(<RepairReportDetailScreen reportId="repair_report:abc" />)
+    expect(spy).toHaveBeenCalledWith({ queryKey: ['troubleshooting'] })
+    expect(spy).toHaveBeenCalledWith({
+      queryKey: ['repair-reports'],
+    })
+  })
+
+  it('does not refresh guide caches while still processing', () => {
+    mockHooks('processing')
+    const { spy } = renderDetail('repair_report:abc')
+    expect(spy).not.toHaveBeenCalledWith({ queryKey: ['troubleshooting'] })
   })
 })

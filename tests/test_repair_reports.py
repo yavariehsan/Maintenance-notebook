@@ -5,6 +5,10 @@ upload validation, listing, detail, 10-row preview, analysis state
 transitions, duplicate/concurrent protection, failure bookkeeping, and
 no-leakage of storage paths.
 
+Plus lifecycle consistency (Milestone 8): the report/run/command state
+contract, submit-grace duplicate protection, worker-heartbeat liveness,
+attach-failure cleanup, and repair-analysis rows on the Tasks endpoint.
+
 Plus engine-level integration (real package pipeline, tmp files only):
 multi-file aggregate determinism, record-ID namespacing, and the full
 chain aggregate → engine → Troubleshooting DB → runtime adapter reads.
@@ -13,7 +17,9 @@ The real ``Sample-1.xlsx`` is never used here; only tiny synthetic
 fixtures built in tmp directories.
 """
 
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -131,17 +137,26 @@ def _repo_router(state):
             return [found] if found else []
         if query.startswith("CREATE repair_analysis_run"):
             return [_run_row()]
-        if "FROM repair_analysis_run" in query and "WHERE" not in query:
-            return state.get("runs", [])
-        if "FROM repair_analysis_run WHERE" in query:
+        if "FROM repair_analysis_run" in query:
             return state.get("runs", [])
         if "FROM command" in query:
             return state.get("commands", [])
         if query.startswith("UPDATE"):
+            state.setdefault("updates", []).append((query, params))
             return []
         raise AssertionError(f"unexpected query: {query}")
 
     return _repo
+
+
+def _iso_now_minus(minutes=0):
+    return (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+
+
+def _live_run(**overrides):
+    row = _run_row(status="processing", command_id="command:live")
+    row.update(overrides)
+    return row
 
 
 # --- upload -----------------------------------------------------------------
@@ -332,7 +347,10 @@ async def test_start_analysis_empty_collection(client):
 
 @pytest.mark.asyncio
 async def test_start_analysis_rejects_concurrent_run(client):
-    active = _run_row(status="processing", command_id="command:live")
+    active = _live_run(
+        created=_iso_now_minus(1),
+        started_at=_iso_now_minus(1),
+    )
     with patch.object(
         reports, "repo_query", new_callable=AsyncMock
     ) as mock_repo:
@@ -340,7 +358,12 @@ async def test_start_analysis_rejects_concurrent_run(client):
             {
                 "reports": [_report_row()],
                 "runs": [active],
-                "commands": [{"status": "running"}],
+                "commands": [
+                    {
+                        "status": "running",
+                        "updated_at": _iso_now_minus(1),
+                    }
+                ],
             }
         )
         resp = client.post("/api/repair-reports/analyze")
@@ -467,6 +490,21 @@ async def test_create_report_statement_is_valid_surrealql(tmp_path, monkeypatch)
 # --- aggregate builder (pure, no DB) --------------------------------------------
 
 
+def test_storage_unique_naming_and_traversal_guard(tmp_path, monkeypatch):
+    monkeypatch.setattr(reports, "REPAIR_REPORTS_FOLDER", str(tmp_path))
+    first = reports.generate_unique_filename("cmms.xlsx")
+    (open(first, "wb")).close()  # occupy the claimed name
+    second = reports.generate_unique_filename("cmms.xlsx")
+    assert first != second
+    assert Path(second).parent == tmp_path
+    # Directory components are stripped, never honored.
+    sneaky = reports.generate_unique_filename("../evil.xlsx")
+    assert Path(sneaky).parent == tmp_path
+    assert Path(sneaky).name == "evil.xlsx"
+    with pytest.raises(ValueError):
+        reports.generate_unique_filename("")
+
+
 def test_aggregate_namespaces_record_ids(tmp_path):
     file_a = tmp_path / "a.xlsx"
     file_b = tmp_path / "b.xlsx"
@@ -516,6 +554,391 @@ def test_namespaced_prefix_preserves_empty_cells():
     assert reports._namespaced_prefix("aa", "  ") is None
     assert reports._namespaced_prefix("aa", "BR") == "aa-BR"
     assert reports._namespaced_prefix("aa", 210) == "aa-210"
+
+
+# --- lifecycle consistency (Milestone 8) ------------------------------------------
+#
+# One truth across report state, run state, and command state: an active
+# analysis never presents as completed, duplicates are refused with 409
+# even inside the submit window, and dead workers heal exactly once.
+
+
+@pytest.mark.asyncio
+async def test_second_start_inside_submit_window_conflicts(client):
+    """A command-less run younger than the grace window blocks duplicates."""
+    young = _run_row(status="queued", command_id=None, created=_iso_now_minus(1))
+    with patch.object(
+        reports, "repo_query", new_callable=AsyncMock
+    ) as mock_repo:
+        mock_repo.side_effect = _repo_router(
+            {"reports": [_report_row()], "runs": [young]}
+        )
+        resp = client.post("/api/repair-reports/analyze")
+    assert resp.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_old_commandless_run_heals_then_allows_start(client):
+    """A command-less run past the grace window heals; the next start works."""
+    stale = _run_row(
+        status="queued", command_id=None, created=_iso_now_minus(60)
+    )
+    updates = []
+
+    async def _repo(query, params=None):
+        if "FROM repair_analysis_run" in query:
+            return [stale]
+        if "FROM repair_report ORDER BY" in query:
+            return [_report_row()]
+        if "FROM repair_report WHERE" in query:
+            return [_report_row()]
+        if query.startswith("CREATE repair_analysis_run"):
+            return [_run_row(id="repair_analysis_run:fresh")]
+        if query.startswith("UPDATE"):
+            updates.append((query, params))
+            return []
+        raise AssertionError(f"unexpected query: {query}")
+
+    with (
+        patch.object(reports, "repo_query", new_callable=AsyncMock) as mock_repo,
+        patch(
+            "api.command_service.CommandService.submit_command_job",
+            new=AsyncMock(return_value="command:fresh"),
+        ),
+    ):
+        mock_repo.side_effect = _repo
+        resp = client.post("/api/repair-reports/analyze")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["run"]["id"] == "repair_analysis_run:fresh"
+    assert any("finished_at" in query for query, _ in updates)
+
+
+@pytest.mark.asyncio
+async def test_new_command_blocks_start(client):
+    """A `new` command recovers on worker restart, so it stays active."""
+    active = _live_run(created=_iso_now_minus(1))
+    with patch.object(
+        reports, "repo_query", new_callable=AsyncMock
+    ) as mock_repo:
+        mock_repo.side_effect = _repo_router(
+            {
+                "reports": [_report_row()],
+                "runs": [active],
+                "commands": [{"status": "new"}],
+            }
+        )
+        resp = client.post("/api/repair-reports/analyze")
+    assert resp.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_orphaned_running_command_heals(client):
+    """A `running` command without a fresh heartbeat is a dead worker."""
+    orphan = _live_run(
+        created=_iso_now_minus(60), started_at=_iso_now_minus(60)
+    )
+    seen_updates = []
+
+    async def _repo(query, params=None):
+        if "FROM repair_analysis_run" in query:
+            return [orphan]
+        if "FROM command" in query:
+            return [{"status": "running"}]
+        if "FROM repair_report WHERE" in query:
+            return [_report_row(analysis_state="processing")]
+        if query.startswith("UPDATE"):
+            seen_updates.append(query)
+            return []
+        raise AssertionError(f"unexpected query: {query}")
+
+    with patch.object(reports, "repo_query", new_callable=AsyncMock) as mock_repo:
+        mock_repo.side_effect = _repo
+        assert await reports.get_active_run() is None
+    assert any("finished_at" in query for query in seen_updates)
+
+
+@pytest.mark.asyncio
+async def test_attach_failure_marks_run_failed():
+    """Submit/attach fallout never leaves an orphan command-less run."""
+    updates = []
+
+    async def _repo(query, params=None):
+        if "FROM repair_analysis_run" in query:
+            return []
+        if "FROM repair_report ORDER BY" in query:
+            return [_report_row()]
+        if query.startswith("CREATE repair_analysis_run"):
+            return [_run_row()]
+        if query.startswith("UPDATE"):
+            updates.append((query, params))
+            return []
+        raise AssertionError(f"unexpected query: {query}")
+
+    with (
+        patch.object(reports, "repo_query", new_callable=AsyncMock) as mock_repo,
+        patch(
+            "api.command_service.CommandService.submit_command_job",
+            new=AsyncMock(return_value="command:orphan"),
+        ),
+        patch.object(
+            reports,
+            "attach_command",
+            new=AsyncMock(side_effect=RuntimeError("db down")),
+        ),
+    ):
+        mock_repo.side_effect = _repo
+        with pytest.raises(RuntimeError):
+            await reports.start_analysis()
+    failed = [
+        params
+        for query, params in updates
+        if "repair_analysis_run" in str(params.get("rid", ""))
+        and params.get("status") == "failed"
+    ]
+    assert failed, "expected the run to be marked failed after attach fallout"
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_once_writes_liveness():
+    from commands import repair_report_commands as worker_commands
+
+    with patch(
+        "open_notebook.database.repository.repo_query", new_callable=AsyncMock
+    ) as mock_repo:
+        mock_repo.return_value = []
+        await worker_commands._heartbeat_once("command:abc")
+    (query, params), _ = mock_repo.call_args
+    assert "analysis_heartbeat" in query
+    assert "updated_at" in query
+
+
+# --- stale command flip + completion guard (Milestone 8) --------------------------
+
+
+@pytest.mark.asyncio
+async def test_finalize_flips_lease_expired_command():
+    """A dead worker's `running` command is failed, not left running."""
+    orphan = _live_run(
+        created=_iso_now_minus(60), started_at=_iso_now_minus(60)
+    )
+    seen = []
+
+    async def _repo(query, params=None):
+        if "FROM repair_analysis_run" in query:
+            return [orphan]
+        if "FROM command" in query:
+            return [{"id": "command:live", "status": "running"}]
+        if "FROM repair_report WHERE" in query:
+            return []
+        if query.startswith("UPDATE"):
+            seen.append((query, params))
+            return []
+        raise AssertionError(f"unexpected query: {query}")
+
+    with patch.object(reports, "repo_query", new_callable=AsyncMock) as mock_repo:
+        mock_repo.side_effect = _repo
+        assert await reports.get_active_run() is None
+    flipped = [
+        params
+        for query, params in seen
+        if "error_message" in query and params.get("status") == "failed"
+    ]
+    assert flipped, "expected the orphaned command to be marked failed"
+
+
+@pytest.mark.asyncio
+async def test_finalize_keeps_new_command_for_restart():
+    """A `new` command is never flipped: restarted workers resume it."""
+    pending = _live_run(created=_iso_now_minus(60))
+    seen = []
+
+    async def _repo(query, params=None):
+        if "FROM repair_analysis_run" in query:
+            return [pending]
+        if "FROM command" in query:
+            return [{"id": "command:live", "status": "new"}]
+        if query.startswith("UPDATE"):
+            seen.append(query)
+            return []
+        raise AssertionError(f"unexpected query: {query}")
+
+    with patch.object(reports, "repo_query", new_callable=AsyncMock) as mock_repo:
+        mock_repo.side_effect = _repo
+        active = await reports.get_active_run()
+    assert active is not None
+    assert not seen, "a `new` command must survive for worker restart"
+
+
+@pytest.mark.asyncio
+async def test_worker_refuses_to_complete_failed_run():
+    """A superseded run can never overwrite the previous valid database."""
+    from types import SimpleNamespace
+
+    from commands import repair_report_commands as worker_commands
+
+    completed_calls = []
+
+    async def _fake_get_run(run_id):
+        # Entry check: processing. Completion guard re-read: failed.
+        if not completed_calls:
+            completed_calls.append(1)
+            return _live_run(status="processing")
+        return _live_run(status="failed", error="healed while running")
+
+    fake_result = SimpleNamespace(records=[], equipment=[], failure_modes=[], guides=[])
+    fake_db = SimpleNamespace(parent=SimpleNamespace(mkdir=lambda **kwargs: None))
+
+    with (
+        patch.object(
+            worker_commands.reports, "_get_run_internal", new=_fake_get_run
+        ),
+        patch.object(
+            worker_commands.reports, "get_active_run", new=AsyncMock(return_value=None)
+        ),
+        patch.object(
+            worker_commands.reports,
+            "_get_report_internal",
+            new=AsyncMock(return_value=_report_row()),
+        ),
+        patch.object(
+            worker_commands.reports,
+            "stored_path",
+            return_value=SimpleNamespace(exists=lambda: True),
+        ),
+        patch.object(
+            worker_commands.reports, "_set_report_state", new=AsyncMock()
+        ),
+        patch.object(
+            worker_commands.reports, "mark_run_processing", new=AsyncMock()
+        ),
+        patch.object(
+            worker_commands.reports, "mark_run_completed", new=AsyncMock()
+        ) as mock_completed,
+        patch.object(
+            worker_commands.reports, "mark_run_failed", new=AsyncMock()
+        ) as mock_failed,
+        patch.object(
+            worker_commands,
+            "_build_aggregate",
+            new=AsyncMock(return_value=[]),
+        ),
+        patch.object(
+            worker_commands,
+            "_load_engine",
+            return_value={
+                "analyze_workbook": lambda *args, **kwargs: fake_result,
+                "EngineConfig": SimpleNamespace(default=lambda: None),
+            },
+        ),
+        patch.object(
+            worker_commands, "_resolve_database_path", return_value=fake_db
+        ),
+        patch(
+            "open_notebook.database.repository.repo_query",
+            new=AsyncMock(return_value=[]),
+        ),
+    ):
+        with pytest.raises(ValueError, match="refusing to complete"):
+            await worker_commands.analyze_repair_reports_command(
+                worker_commands.AnalyzeRepairReportsInput(run_id="repair_analysis_run:x")
+            )
+    mock_completed.assert_not_called()
+    mock_failed.assert_called_once()
+
+
+# --- tasks endpoint: repair-analysis rows (Milestone 8) ----------------------------
+
+
+def _tasks_repo_factory(embed_commands, analyze_commands, runs, reports):
+    async def _repo(query, params=None):
+        if "name = 'embed_source'" in query:
+            return embed_commands
+        if "analyze_repair_reports" in query:
+            return analyze_commands
+        if "FROM repair_analysis_run" in query:
+            return runs
+        if "FROM repair_report" in query:
+            return reports
+        if "FROM source" in query:
+            return []
+        raise AssertionError(f"unexpected query: {query}")
+
+    return _repo
+
+
+def _analyze_cmd(**overrides):
+    record = {
+        "id": "command:analysis1",
+        "status": "running",
+        "args": {"run_id": "repair_analysis_run:run1"},
+        "result": None,
+        "error_message": None,
+        "created": "2026-09-27T00:00:00",
+        "updated": None,
+        "started_at": None,
+        "updated_at": None,
+    }
+    record.update(overrides)
+    return record
+
+
+@pytest.mark.asyncio
+@patch("open_notebook.database.repository.repo_query", new_callable=AsyncMock)
+async def test_tasks_lists_active_repair_analysis(mock_repo, client):
+    mock_repo.side_effect = _tasks_repo_factory(
+        [],
+        [_analyze_cmd()],
+        [
+            {
+                "id": "repair_analysis_run:run1",
+                "report_ids": [
+                    "repair_report:aaa",
+                    "repair_report:bbb",
+                ],
+            }
+        ],
+        [
+            {"id": "repair_report:aaa", "filename": "a.xlsx"},
+            {"id": "repair_report:bbb", "filename": "b.xlsx"},
+        ],
+    )
+    (task,) = client.get("/api/tasks").json()
+    assert task["item_type"] == "repair_analysis"
+    assert task["command_name"] == "analyze_repair_reports"
+    assert task["run_id"] == "repair_analysis_run:run1"
+    assert task["title"] == "a.xlsx, b.xlsx"
+    assert task["status"] == "running"
+    # No chunk counts exist for analysis jobs: indeterminate, never faked.
+    assert task["percentage"] is None
+    assert task["processed_chunks"] is None
+
+
+@pytest.mark.asyncio
+@patch("open_notebook.database.repository.repo_query", new_callable=AsyncMock)
+async def test_tasks_completed_repair_is_terminal(mock_repo, client):
+    mock_repo.side_effect = _tasks_repo_factory(
+        [],
+        [_analyze_cmd(status="completed")],
+        [{"id": "repair_analysis_run:run1", "report_ids": []}],
+        [],
+    )
+    (task,) = client.get("/api/tasks").json()
+    assert task["status"] == "completed"
+    assert task["percentage"] == 100.0
+
+
+@pytest.mark.asyncio
+@patch("open_notebook.database.repository.repo_query", new_callable=AsyncMock)
+async def test_tasks_failed_repair_carries_error(mock_repo, client):
+    mock_repo.side_effect = _tasks_repo_factory(
+        [],
+        [_analyze_cmd(status="failed", error_message="boom")],
+        [{"id": "repair_analysis_run:run1", "report_ids": []}],
+        [],
+    )
+    (task,) = client.get("/api/tasks").json()
+    assert task["status"] == "failed"
+    assert task["error_message"] == "boom"
 
 
 # --- end-to-end chain (real engine, tmp only) ------------------------------------

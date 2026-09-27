@@ -28,7 +28,7 @@ from __future__ import annotations
 import asyncio
 import os
 import secrets
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -62,8 +62,25 @@ RUN_FAILED = "failed"
 
 ACTIVE_RUN_STATUSES = (RUN_QUEUED, RUN_PROCESSING)
 
-#: surreal-commands job statuses that mean "still working".
-ACTIVE_COMMAND_STATUSES = ("new", "queued", "running")
+#: surreal-commands job statuses that mean "still working". The framework
+#: only ever writes new → running → completed | failed | canceled.
+ACTIVE_COMMAND_STATUSES = ("new", "running")
+
+#: A run without a command record younger than this is a submission still
+#: in flight (create → submit → attach), not a stale run. Second POSTs
+#: inside the window get 409 instead of finalizing the first run and
+#: creating a duplicate that would interleave state writes.
+SUBMIT_GRACE_SECONDS = 300
+
+#: A `running` command proves liveness through worker heartbeats (see
+#: commands/repair_report_commands.py). Past this age without one, the
+#: worker is considered dead even though the framework keeps the status
+#: at `running` (restarted workers only resume `new` commands).
+RUNNING_LEASE_SECONDS = 1800
+
+#: Heartbeat cadence during engine execution (best-effort, never fails
+#: the run). Well below RUNNING_LEASE_SECONDS by design.
+HEARTBEAT_INTERVAL_SECONDS = 60
 
 #: Preview contract: column names + at most this many data rows.
 PREVIEW_ROW_LIMIT = 10
@@ -439,24 +456,75 @@ async def _get_run_internal(run_id: str) -> Dict[str, Any]:
     return rows[0]
 
 
-async def _command_active(command_id: Optional[str]) -> bool:
+def _parse_time(value: Any) -> Optional[float]:
+    """SurrealDB timestamp (datetime or ISO string) → epoch seconds."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        moment = value
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        return moment.timestamp()
+    try:
+        moment = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.timestamp()
+
+
+async def _read_command(command_id: str) -> Optional[Dict[str, Any]]:
+    """One surreal-commands record, or ``None`` when it never materialized."""
+    rows = await repo_query(
+        "SELECT * FROM command WHERE id = $cid",
+        {"cid": ensure_record_id(command_id)},
+    )
+    return rows[0] if rows else None
+
+
+async def _command_active(
+    command_id: Optional[str], run: Optional[Dict[str, Any]] = None
+) -> bool:
     """Whether a surreal-commands job is still working (self-healing seam).
 
-    A missing command record means the job never materialized — not active.
+    - missing command record → not active (job never materialized);
+    - ``new`` → active (a restarted worker resumes ``new`` commands);
+    - ``running`` → active only with liveness proof: a fresh worker
+      heartbeat, or a run that started within the lease (the worker flips
+      to ``running`` before its first heartbeat lands).
     """
     if not command_id:
         return False
     try:
-        rows = await repo_query(
-            "SELECT status FROM command WHERE id = $cid",
-            {"cid": ensure_record_id(command_id)},
-        )
+        command = await _read_command(command_id)
     except Exception as e:  # pragma: no cover - defensive
         logger.warning(f"Could not read command status for {command_id}: {e}")
         return True
-    if not rows:
+    if command is None:
         return False
-    return str(rows[0].get("status")) in ACTIVE_COMMAND_STATUSES
+    return _is_command_live(command, run)
+
+
+def _is_command_live(
+    command: Dict[str, Any], run: Optional[Dict[str, Any]] = None
+) -> bool:
+    """Liveness from a command row without another database round-trip."""
+    status = str(command.get("status"))
+    if status == "new":
+        return True
+    if status != "running":
+        return False
+    now = datetime.now(timezone.utc).timestamp()
+    heartbeat = _parse_time(
+        command.get("analysis_heartbeat") or command.get("updated_at")
+    )
+    if heartbeat is not None:
+        return (now - heartbeat) < RUNNING_LEASE_SECONDS
+    started = _parse_time((run or {}).get("started_at") or (run or {}).get("created"))
+    if started is None:
+        return True
+    return (now - started) < RUNNING_LEASE_SECONDS
 
 
 async def _finalize_stale_run(run: Dict[str, Any]) -> None:
@@ -477,6 +545,32 @@ async def _finalize_stale_run(run: Dict[str, Any]) -> None:
             "error": "The analysis worker stopped without completing.",
         },
     )
+    # A lease-expired `running` command would otherwise sit on the Tasks
+    # page (and in liveness checks) forever: restarted workers only resume
+    # `new` commands. Flip it to failed — the worker's completion guard
+    # refuses to resurrect a non-processing run, so this cannot corrupt a
+    # genuinely live run that only *looks* stale.
+    command_id = str(run.get("command_id")) if run.get("command_id") else None
+    if command_id:
+        try:
+            command = await _read_command(command_id)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning(f"Could not read orphan command {command_id}: {e}")
+            command = None
+        if (
+            command is not None
+            and str(command.get("status")) == "running"
+            and not _is_command_live(command, run)
+        ):
+            await repo_query(
+                "UPDATE $cid SET status = $status, "
+                "error_message = $error, updated_at = time::now()",
+                {
+                    "cid": ensure_record_id(command_id),
+                    "status": "failed",
+                    "error": "Orphaned: worker liveness expired.",
+                },
+            )
     for report_id in run.get("report_ids") or []:
         try:
             internal = await _get_report_internal(str(report_id))
@@ -500,7 +594,12 @@ async def _finalize_stale_run(run: Dict[str, Any]) -> None:
 
 
 async def get_active_run() -> Optional[Dict[str, Any]]:
-    """Latest unfinished run, or ``None`` (stale runs are finalized first)."""
+    """Latest unfinished run, or ``None`` (stale runs are finalized first).
+
+    A run without a command record is only finalized once it outlives the
+    submit grace window — before that, its submission is still in flight
+    and a second POST must get 409 rather than orphaning it.
+    """
     rows = await repo_query(
         f"SELECT * FROM {TABLE_RUN} WHERE status IN $statuses "
         "ORDER BY created DESC LIMIT 1",
@@ -509,9 +608,15 @@ async def get_active_run() -> Optional[Dict[str, Any]]:
     if not rows:
         return None
     run = rows[0]
-    if await _command_active(
-        str(run.get("command_id")) if run.get("command_id") else None
-    ):
+    command_id = str(run.get("command_id")) if run.get("command_id") else None
+    if command_id is None:
+        created = _parse_time(run.get("created"))
+        now = datetime.now(timezone.utc).timestamp()
+        if created is None or (now - created) < SUBMIT_GRACE_SECONDS:
+            return _run_row(run)
+        await _finalize_stale_run(run)
+        return None
+    if await _command_active(command_id, run):
         return _run_row(run)
     await _finalize_stale_run(run)
     return None
@@ -742,11 +847,22 @@ async def start_analysis() -> Dict[str, Any]:
         await mark_run_failed(run["id"], f"Failed to submit analysis: {e}")
         raise
 
-    await attach_command(run["id"], command_id)
-    for report in reports:
-        await _set_report_state(
-            report["id"], STATE_QUEUED, run_id=run["id"], error=None
-        )
+    try:
+        await attach_command(run["id"], command_id)
+    except Exception as e:
+        await mark_run_failed(run["id"], f"Failed to attach analysis: {e}")
+        raise
+    try:
+        for report in reports:
+            await _set_report_state(
+                report["id"], STATE_QUEUED, run_id=run["id"], error=None
+            )
+    except Exception as e:
+        # The command is submitted but the reports were never queued:
+        # fail the run loudly instead of leaving an orphan command behind
+        # a command-less run the next POST would finalize as stale.
+        await mark_run_failed(run["id"], f"Failed to queue analysis: {e}")
+        raise
     run["command_id"] = command_id
     run["report_ids"] = [report["id"] for report in reports]
     logger.info(f"Submitted repair-report analysis run {run['id']}")

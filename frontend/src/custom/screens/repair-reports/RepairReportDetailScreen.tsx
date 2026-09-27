@@ -1,6 +1,9 @@
 'use client'
 
+import { useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
+import { useQueryClient } from '@tanstack/react-query'
+import { QUERY_KEYS } from '@/lib/api/query-client'
 
 import { AppShell } from '@/components/layout/AppShell'
 import { Button } from '@/components/ui/button'
@@ -66,6 +69,7 @@ function formatCell(value: string | number | boolean | null): string {
 export function RepairReportDetailScreen({ reportId }: { reportId: string }) {
   const { t } = useTranslation()
   const router = useRouter()
+  const queryClient = useQueryClient()
   const {
     data: detail,
     isLoading,
@@ -81,8 +85,25 @@ export function RepairReportDetailScreen({ reportId }: { reportId: string }) {
   const analyzeMutation = useStartRepairAnalysis()
 
   const report = detail?.report ?? null
+  const analysisState = report?.analysis_state ?? null
   const canAnalyze =
-    report?.analysis_state === 'not_analyzed' || report?.analysis_state === 'failed'
+    analysisState === 'not_analyzed' || analysisState === 'failed'
+
+  // When polling observes the run reaching a terminal state, refresh the
+  // dependent caches once: the troubleshooting guide data (a new database
+  // may have landed) and the reports list. Transient states keep polling
+  // quietly without extra invalidation traffic.
+  const previousState = useRef<string | null>(null)
+  useEffect(() => {
+    const wasActive =
+      previousState.current === 'queued' || previousState.current === 'processing'
+    const isTerminal = analysisState === 'completed' || analysisState === 'failed'
+    if (wasActive && isTerminal) {
+      queryClient.invalidateQueries({ queryKey: ['troubleshooting'] })
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.repairReports })
+    }
+    previousState.current = analysisState
+  }, [analysisState, queryClient])
 
   const renderPreview = () => {
     if (previewLoading) {

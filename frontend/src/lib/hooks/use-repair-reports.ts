@@ -94,6 +94,9 @@ export function useStartRepairAnalysis() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: QUERY_KEYS.repairReports })
       queryClient.invalidateQueries({ queryKey: QUERY_KEYS.repairAnalysisRuns })
+      // Wake the Tasks page: its bounded polling is off while no job is
+      // active, so a fresh analysis command would otherwise sit unseen.
+      queryClient.invalidateQueries({ queryKey: ['tasks'] })
       toast({
         title: t('common.success'),
         description: t('repairReports.analyzeStarted'),

@@ -39,6 +39,12 @@ def _cmd(**overrides):
 
 def _repo_factory(commands):
     async def _repo(query, params=None):
+        if "analyze_repair_reports" in query:
+            return []
+        if "FROM repair_analysis_run" in query:
+            return []
+        if "FROM repair_report" in query:
+            return []
         if "FROM command" in query:
             return commands
         if "FROM source" in query:

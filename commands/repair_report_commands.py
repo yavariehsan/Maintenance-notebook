@@ -126,6 +126,14 @@ async def analyze_repair_reports_command(
             failure_mode_count=int(run.get("failure_mode_count") or 0),
             processing_time=0.0,
         )
+    if run.get("status") == reports.RUN_FAILED:
+        # A run the API already failed (submit/attach fallout, stale
+        # finalization) must never execute: its command, if one was
+        # submitted, is an orphan. Raise permanently so the job lands in
+        # `failed` without touching reports or the runtime database.
+        message = str(run.get("error") or "Analysis run was already failed.")
+        logger.warning(f"Analysis run {run_id} is failed; not executing: {message}")
+        raise ValueError(message)
 
     # Single-writer guard: another live run means this submission raced the
     # API check — fail transiently so the retry lands after it finishes.
@@ -171,9 +179,17 @@ async def analyze_repair_reports_command(
 
     tmp_dir = tempfile.mkdtemp(prefix="repair-analysis-")
     aggregate_path = Path(tmp_dir) / f"aggregate-{run_id.replace(':', '_')}.xlsx"
+    stop_heartbeat = asyncio.Event()
+    heartbeat_task: Optional[asyncio.Task[None]] = None
+    worker_command_id = str(run.get("command_id")) if run.get("command_id") else None
     try:
         manifest = await _build_aggregate(entries, aggregate_path)
         await reports.mark_run_processing(run_id, manifest)
+        if worker_command_id:
+            await _heartbeat_once(worker_command_id)
+            heartbeat_task = asyncio.create_task(
+                _heartbeat_loop(worker_command_id, stop_heartbeat)
+            )
 
         engine = _load_engine()
         database_path = _resolve_database_path()
@@ -195,6 +211,19 @@ async def analyze_repair_reports_command(
             "failure_mode_count": len(result.failure_modes),
             "guide_count": len(result.guides),
         }
+        # Guard against resurrecting a run the API already failed (stale
+        # finalization while this worker was still running): only a run
+        # that is still `processing` may be completed, so the previous
+        # valid database and report states are never overwritten by a
+        # superseded run.
+        current = await reports._get_run_internal(run_id)
+        if current.get("status") != reports.RUN_PROCESSING:
+            message = (
+                f"Analysis run {run_id} is {current.get('status')}, "
+                "refusing to complete it."
+            )
+            logger.error(message)
+            raise ValueError(message)
         await reports.mark_run_completed(run_id, counts)
         for report_id in report_ids:
             await reports._set_report_completed(report_id, run_id)
@@ -224,6 +253,12 @@ async def analyze_repair_reports_command(
         logger.debug(f"Transient error in analysis run {run_id}; will retry")
         raise
     finally:
+        stop_heartbeat.set()
+        if heartbeat_task is not None:
+            try:
+                await heartbeat_task
+            except (asyncio.CancelledError, Exception):
+                pass
         try:
             if aggregate_path.exists():
                 aggregate_path.unlink()
@@ -232,12 +267,40 @@ async def analyze_repair_reports_command(
             pass
 
 
+async def _heartbeat_once(command_id: str) -> None:
+    """Best-effort liveness write so a live run is never mistaken for dead.
+
+    The framework only flips ``new → running → completed|failed`` with no
+    progress signal in between; without this, a worker killed mid-run
+    leaves ``running`` forever and every future analysis 409s. Failures
+    here must never fail the run itself.
+    """
+    try:
+        from open_notebook.database.repository import ensure_record_id, repo_query
+
+        await repo_query(
+            "UPDATE $cid SET analysis_heartbeat = time::now(), "
+            "updated_at = time::now()",
+            {"cid": ensure_record_id(command_id)},
+        )
+    except Exception as e:
+        logger.debug(f"Analysis heartbeat failed (ignored): {e}")
+
+
+async def _heartbeat_loop(command_id: str, stop: asyncio.Event) -> None:
+    """Write liveness every HEARTBEAT_INTERVAL_SECONDS until stopped."""
+    while not stop.is_set():
+        await _heartbeat_once(command_id)
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=reports.HEARTBEAT_INTERVAL_SECONDS)
+        except asyncio.TimeoutError:
+            pass
+
+
 async def _build_aggregate(
     entries: List[Dict[str, Any]], dest: Path
 ) -> List[Dict[str, Any]]:
     """Prepare the deterministic aggregate workbook off the event loop."""
-    import asyncio
-
     try:
         return await asyncio.to_thread(
             reports.build_aggregate_workbook, entries, dest

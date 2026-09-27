@@ -152,3 +152,57 @@ hints: the command registry resolves them at registration, so
 on 2026-09-26 against disposable native services with the real
 `Sample-1.xlsx` (single-file run: 1706 records/13 equipment; two-file
 run: 3412 records, evidence split evenly across both file namespaces).
+
+## Analysis state contract (report vs run vs command)
+
+Three related but distinct states share one truth; no screen may present
+a running analysis as completed:
+
+- **Report** (`repair_report.analysis_state`): the state of the
+  report's analysis *result* — `not_analyzed | queued | processing |
+  completed | failed`.
+- **Run** (`repair_analysis_run.status`): the currently executing
+  knowledge-generation run — `queued | processing | completed | failed`.
+- **Command** (`command.status`): the background job — `new | running |
+  completed | failed | canceled`, visible on the Tasks page alongside
+  embedding jobs.
+
+The Tasks page (`GET /api/tasks`) lists both embedding jobs and repair
+analysis runs: analysis commands map to the same task row shape with
+`item_type: "repair_analysis"`, the linked `run_id`, and report
+filenames as the title. There are no chunk counts for analysis jobs, so
+progress stays indeterminate while active (never estimated) and reads
+100% once completed. Bounded 2s polling on both screens converges them
+on the same truth; starting analysis additionally wakes the Tasks
+cache, and observing completion on a report detail refreshes the
+troubleshooting guide caches.
+
+Rules: starting analysis marks every included report `queued`
+immediately (both screens converge through bounded 2s polling; the
+Tasks page wakes via cache invalidation at submit). A `failed` run
+keeps previously-`completed` reports `completed` (the runtime DB still
+holds their knowledge); only reports that never contributed become
+`failed`. A second POST while a run is active gets 409 — including
+inside the submit grace window (5 min), so a duplicate run can never
+interleave state writes. Worker liveness comes from heartbeats written
+to the command record during engine execution; a `running` command
+without liveness for 30 min is declared orphaned, its run finalized as
+failed, and its command row flipped to `failed` (a restarted worker
+only resumes `new` commands, and the worker refuses to complete a run
+that is no longer `processing`, so resurrection is impossible). A lost
+source file fails its run loudly; restore the file and retry — there is
+deliberately no silent subset regeneration and no report deletion yet.
+
+Operational notes (observed on native Windows, not hypothetical):
+
+- Uvicorn file-reload does not reliably replace the API worker process
+  on Windows: after editing backend code, restart the API (and always
+  restart the worker — it has no reload at all) instead of trusting
+  autoreload.
+- A missing source blob fails its run loudly by design; restore the
+  file from backup and retry — the failed report stays eligible.
+- Lease/grace constants live in `api/repair_report_service.py`
+  (`SUBMIT_GRACE_SECONDS`, `RUNNING_LEASE_SECONDS`,
+  `HEARTBEAT_INTERVAL_SECONDS`); the 30-minute lease comfortably covers
+  observed engine runs (30–110 s for 1706–3414 records) while bounding
+  orphaned-`running` recovery.
