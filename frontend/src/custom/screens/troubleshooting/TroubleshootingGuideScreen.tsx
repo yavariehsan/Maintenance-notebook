@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 
 import { AppShell } from '@/components/layout/AppShell'
 import { Button } from '@/components/ui/button'
@@ -25,7 +25,10 @@ import {
   useTroubleshootingStatus,
 } from '@/lib/hooks/use-troubleshooting'
 import { isTroubleshootingAvailable } from '@/lib/api/troubleshooting'
-import type { TroubleshootingCause } from '@/lib/api/troubleshooting'
+import type {
+  TroubleshootingCause,
+  TroubleshootingCauseAction,
+} from '@/lib/api/troubleshooting'
 import { useTranslation } from '@/lib/hooks/use-translation'
 
 /**
@@ -90,6 +93,32 @@ export function TroubleshootingGuideScreen() {
     setSelectedCode(code)
     setSelectedModeId('')
   }
+
+  /**
+   * Unified repair procedure composed for display only: distinct historical
+   * actions across all candidate causes, first-seen wins, ordered by cause
+   * rank then recorded frequency. Roles, frequencies and source record IDs
+   * are precomputed values passed through unchanged — no new scoring.
+   */
+  const recommendedActions = useMemo(() => {
+    if (!guide) return []
+    const seen = new Map<string, TroubleshootingCauseAction & { causeRank: number }>()
+    for (const cause of guide.causes) {
+      for (const action of cause.actions) {
+        const key = (action.action_text || '').trim()
+        if (!key || seen.has(key)) continue
+        seen.set(key, { ...action, causeRank: cause.rank })
+      }
+    }
+    return [...seen.values()].sort(
+      (a, b) => a.causeRank - b.causeRank || (b.frequency ?? 0) - (a.frequency ?? 0),
+    )
+  }, [guide])
+
+  const methodSection = useMemo(
+    () => guide?.sections.find((section) => section.section === 'method') ?? null,
+    [guide],
+  )
 
   const renderCause = (cause: TroubleshootingCause) => (
     <Card key={cause.id}>
@@ -204,6 +233,13 @@ export function TroubleshootingGuideScreen() {
             <AlertDescription>{t('troubleshootingGuide.insufficientEvidence')}</AlertDescription>
           </Alert>
         )}
+        <p className="text-sm text-muted-foreground">
+          {t('troubleshootingGuide.equipmentLabel')}:{' '}
+          <span className="font-mono font-medium text-foreground">{guide.equipment_code}</span>
+          {' · '}
+          {t('troubleshootingGuide.failureModeLabel')}:{' '}
+          <span className="font-medium text-foreground">{guide.failure_mode_label}</span>
+        </p>
         {guide.symptom_summary && (
           <Card>
             <CardHeader>
@@ -218,34 +254,53 @@ export function TroubleshootingGuideScreen() {
         )}
         <h3 className="text-sm font-medium">{t('troubleshootingGuide.causesTitle')}</h3>
         {guide.causes.map(renderCause)}
-        {guide.sections.length > 0 && (
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm font-medium">
-                {t('troubleshootingGuide.sectionsTitle')}
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {[...guide.sections]
-                .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
-                .map((section, index) => (
-                  <div
-
-                    key={`${section.section ?? 'section'}-${index}`}
-                    className="space-y-1"
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm font-medium">
+              {t('troubleshootingGuide.recommendedActionsTitle')}
+            </CardTitle>
+          </CardHeader>
+          <CardContent data-testid="recommended-actions">
+            {recommendedActions.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                {t('troubleshootingGuide.noRecommendedActions')}
+              </p>
+            ) : (
+              <ol className="flex flex-col gap-2 list-decimal ms-5">
+                {recommendedActions.map((action) => (
+                  <li
+                    key={action.id ?? action.action_text}
+                    className="text-sm leading-6"
                   >
-                    {section.title && (
-                      <h4 className="text-sm font-medium">{section.title}</h4>
+                    {action.action_text || '—'}
+                    <span className="flex flex-wrap gap-1.5 mt-1">
+                      {action.role && (
+                        <Badge variant="secondary" className="font-mono text-[11px]">
+                          {action.role}
+                        </Badge>
+                      )}
+                      {typeof action.frequency === 'number' && (
+                        <Badge variant="outline" className="font-mono text-[11px]">
+                          ×{action.frequency}
+                        </Badge>
+                      )}
+                    </span>
+                    {action.source_record_ids.length > 0 && (
+                      <span className="block text-xs text-muted-foreground font-mono">
+                        {action.source_record_ids.join(', ')}
+                      </span>
                     )}
-                    {section.body && (
-                      <p className="text-sm leading-7 whitespace-pre-wrap text-muted-foreground">
-                        {section.body}
-                      </p>
-                    )}
-                  </div>
+                  </li>
                 ))}
-            </CardContent>
-          </Card>
+              </ol>
+            )}
+          </CardContent>
+        </Card>
+        {methodSection?.body && (
+          <p className="text-xs text-muted-foreground leading-5">
+            {methodSection.title ? `${methodSection.title}: ` : ''}
+            {methodSection.body}
+          </p>
         )}
         {guide.safety_notes.length > 0 && (
           <Card>
@@ -355,7 +410,6 @@ export function TroubleshootingGuideScreen() {
                 {equipment.map((item) => (
                   <SelectItem key={item.code} value={item.code}>
                     {item.code}
-                    {item.name ? ` — ${item.name}` : ''} ({item.failure_mode_count})
                   </SelectItem>
                 ))}
               </SelectContent>

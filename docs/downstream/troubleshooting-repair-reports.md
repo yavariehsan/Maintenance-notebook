@@ -104,6 +104,26 @@ values. `insufficient_historical_repair_evidence` warnings, safety
 notes, evidence excerpts with source record IDs, and pre-rendered guide
 sections all come from the precomputed database verbatim.
 
+The equipment selector shows ONLY the equipment code (`کد فرایندی`,
+e.g. `M1`) — no name, manufacturer, model, or counts. Identity
+semantics are unchanged; this is presentation only.
+
+Concept model (do not conflate):
+
+- **Failure mode**: the observed failure/symptom classification.
+- **Candidate cause**: one historical cause associated with the mode,
+  with support/probability/confidence.
+- **Repair action**: one diagnostic/corrective/verification step mined
+  from historical repair descriptions (role + frequency + source
+  records).
+- **Troubleshooting guide**: the synthesized presentation — failure/
+  symptom, ranked candidate causes, the unified recommended-action
+  procedure (distinct actions across causes, ordered by cause rank then
+  frequency; roles and record refs passed through, never rescored),
+  historical evidence/provenance, safety notes when available, and the
+  evidence-sufficiency state. Causes are a component of the guide, never
+  the guide itself.
+
 ## Endpoints (all under `/api`)
 
 `POST /repair-reports` · `GET /repair-reports` ·

@@ -99,8 +99,49 @@ const guide: TroubleshootingGuide = {
         },
       ],
     },
+    {
+      id: 'cause-2',
+      label: 'شل بودن سیم‌کشی',
+      kinds: ['explicitly_recorded'],
+      support_percent: 33.3,
+      evidence_count: 1,
+      weighted_evidence: 1,
+      denominator: 3,
+      calculation_method: 'weighted_share',
+      similarity_score: null,
+      similarity_basis: null,
+      confidence: 0.3,
+      probability: 0.33,
+      rank: 2,
+      actions: [
+        {
+          id: 'a-1-dup',
+          category: null,
+          role: 'corrective',
+          action_text: 'منبع تغذیه تعویض شد',
+          source_record_ids: ['k-B-2'],
+          frequency: 1,
+        },
+        {
+          id: 'a-2',
+          category: null,
+          role: 'diagnostic',
+          action_text: 'سیم‌کشی بررسی شد',
+          source_record_ids: ['k-B-2'],
+          frequency: 3,
+        },
+      ],
+      evidence: [],
+    },
   ],
-  sections: [],
+  sections: [
+    {
+      section: 'method',
+      title: 'How these numbers were produced',
+      position: 10,
+      body: 'Support percentages are shares of similarity-weighted evidence.',
+    },
+  ],
   safety_notes: [{ note_text: 'برق را قطع کنید', source_record_ids: [], cause_ids: [] }],
   warnings: ['insufficient_historical_repair_evidence'],
 }
@@ -176,6 +217,16 @@ describe('TroubleshootingGuideScreen', () => {
     expect(screen.getByText('troubleshootingGuide.noEquipmentTitle')).toBeInTheDocument()
   })
 
+  it('renders equipment options using only the equipment code', async () => {
+    mockAll({ modesData: [] })
+    render(<TroubleshootingGuideScreen />)
+
+    fireEvent.click(screen.getByRole('combobox'))
+    const option = await screen.findByRole('option', { name: 'B104' })
+    // Only the code: no name, manufacturer, model, or counts in the label.
+    expect(option.textContent).toBe('B104')
+  })
+
   it('walks equipment to failure mode to guide with distinct metrics', async () => {
     mockAll({ modesData: modes, guideData: guide })
     render(<TroubleshootingGuideScreen />)
@@ -201,12 +252,47 @@ describe('TroubleshootingGuideScreen', () => {
     expect(screen.getByText(/0\.67/)).toBeInTheDocument()
     expect(screen.getByText(/0\.50/)).toBeInTheDocument()
     expect(screen.getByText(/خرابی منبع تغذیه/)).toBeInTheDocument()
-    expect(screen.getByText('منبع تغذیه تعویض شد')).toBeInTheDocument()
+    expect(screen.getAllByText('منبع تغذیه تعویض شد').length).toBeGreaterThanOrEqual(2)
     expect(screen.getByText('برق را قطع کنید')).toBeInTheDocument()
     // The insufficiency warning is surfaced, never hidden.
     expect(
       screen.getByText('troubleshootingGuide.insufficientEvidence'),
     ).toBeInTheDocument()
+  })
+
+  it('presents a unified repair procedure, not just cause cards', async () => {
+    mockAll({ modesData: modes, guideData: guide })
+    render(<TroubleshootingGuideScreen />)
+
+    fireEvent.click(screen.getByRole('combobox'))
+    fireEvent.click(await screen.findByRole('option', { name: 'B104' }))
+    await waitFor(() => {
+      expect(
+        screen.getByText('troubleshootingGuide.selectFailureModeTitle'),
+      ).toBeInTheDocument()
+    })
+    const boxes = screen.getAllByRole('combobox')
+    fireEvent.click(boxes[boxes.length - 1])
+    fireEvent.click(await screen.findByRole('option', { name: /روشن نشدن/ }))
+    await waitFor(() => {
+      expect(
+        screen.getByText('troubleshootingGuide.recommendedActionsTitle'),
+      ).toBeInTheDocument()
+    })
+
+    // Both causes remain visible as components of the guide...
+    expect(screen.getByText(/خرابی منبع تغذیه/)).toBeInTheDocument()
+    expect(screen.getByText(/شل بودن سیم‌کشی/)).toBeInTheDocument()
+    // ...while the shared action is deduplicated in the unified procedure.
+    const unified = screen.getByTestId('recommended-actions')
+    expect(unified.textContent).toMatch(/سیم‌کشی بررسی شد/)
+    const occurrences = (unified.textContent?.match(/منبع تغذیه تعویض شد/g) ?? []).length
+    expect(occurrences).toBe(1)
+    // Roles and provenance travel with the unified actions.
+    expect(unified.textContent).toMatch(/diagnostic/)
+    expect(unified.textContent).toMatch(/k-B-1/)
+    // Methodology footnote from the precomputed method section.
+    expect(screen.getByText(/similarity-weighted evidence/)).toBeInTheDocument()
   })
 
   it('shows the no-failure-modes state for the selected equipment', async () => {
