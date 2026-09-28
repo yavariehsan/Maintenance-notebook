@@ -185,3 +185,77 @@ async def test_delete_unknown_task_not_found(mock_delete, mock_repo, client):
     resp = client.delete("/api/tasks/command:missing")
     assert resp.status_code == 404
     assert mock_delete.await_count == 0
+
+
+# --- DELETE /api/tasks/history (Clear History) --------------------------------
+
+
+def _history_repo_factory(commands):
+    async def _repo(query, params=None):
+        if "FROM command" in query:
+            return commands
+        raise AssertionError(f"unexpected query: {query}")
+
+    return _repo
+
+
+@pytest.mark.asyncio
+@patch("open_notebook.database.repository.repo_query", new_callable=AsyncMock)
+@patch("open_notebook.database.repository.repo_delete", new_callable=AsyncMock)
+async def test_clear_history_removes_only_terminal(mock_delete, mock_repo, client):
+    mock_repo.side_effect = _history_repo_factory(
+        [
+            _cmd(id="command:done", status="completed"),
+            _cmd(id="command:bad", status="failed"),
+            _cmd(id="command:gone", status="canceled"),
+            _cmd(id="command:run", status="running"),
+            _cmd(id="command:new", status="new"),
+        ]
+    )
+    resp = client.delete("/api/tasks/history")
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"deleted": 3}
+    assert mock_delete.await_count == 3
+
+
+@pytest.mark.asyncio
+@patch("open_notebook.database.repository.repo_query", new_callable=AsyncMock)
+@patch("open_notebook.database.repository.repo_delete", new_callable=AsyncMock)
+async def test_clear_history_empty_is_zero(mock_delete, mock_repo, client):
+    """Empty history (and repeated clears) delete nothing, still 200."""
+    mock_repo.side_effect = _history_repo_factory([])
+    assert client.delete("/api/tasks/history").json() == {"deleted": 0}
+    assert client.delete("/api/tasks/history").json() == {"deleted": 0}
+    assert mock_delete.await_count == 0
+
+
+# --- task ordering: most recently updated first ---------------------------------
+
+
+@pytest.mark.asyncio
+@patch("open_notebook.database.repository.repo_query", new_callable=AsyncMock)
+async def test_tasks_sorted_by_updated_desc(mock_repo, client):
+    """Server-side ordering is updated_at DESC with deterministic ties."""
+    old = _cmd(id="command:old", status="completed", updated_at="2026-09-20T10:00:00")
+    new = _cmd(id="command:new", status="failed", updated_at="2026-09-28T10:00:00")
+    tie_a = _cmd(id="command:aaa", status="completed", updated_at="2026-09-25T10:00:00")
+    tie_b = _cmd(id="command:bbb", status="completed", updated_at="2026-09-25T10:00:00")
+
+    async def _repo(query, params=None):
+        if "analyze_repair_reports" in query:
+            return []
+        if "FROM repair_analysis_run" in query:
+            return []
+        if "FROM repair_report" in query:
+            return []
+        if "FROM command" in query:
+            return [old, tie_a, new, tie_b]
+        if "FROM source" in query:
+            return []
+        raise AssertionError(f"unexpected query: {query}")
+
+    mock_repo.side_effect = _repo
+    resp = client.get("/api/tasks")
+    assert resp.status_code == 200
+    ids = [task["job_id"] for task in resp.json()]
+    assert ids == ["command:new", "command:bbb", "command:aaa", "command:old"]

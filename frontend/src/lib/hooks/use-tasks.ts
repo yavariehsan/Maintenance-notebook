@@ -45,3 +45,27 @@ export function useDeleteTask() {
     },
   })
 }
+
+export function useClearTasksHistory() {
+  const queryClient = useQueryClient()
+  const { toast } = useToast()
+  const { t } = useTranslation()
+
+  return useMutation({
+    mutationFn: () => tasksApi.clearHistory(),
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ['tasks'] })
+      toast({
+        title: t('common.success'),
+        description: t('tasks.clearHistorySuccess', { count: result.deleted }),
+      })
+    },
+    onError: (error: unknown) => {
+      toast({
+        title: t('common.error'),
+        description: t(getApiErrorKey(error, t('tasks.clearHistoryFailed'))),
+        variant: 'destructive',
+      })
+    },
+  })
+}

@@ -159,9 +159,80 @@ async def list_tasks(limit: int = Query(50, ge=1, le=200)):
 
     tasks.extend(await _repair_analysis_tasks(limit))
 
-    # Newest first across both job families.
-    tasks.sort(key=lambda task: task.created or "", reverse=True)
+    # Most recently updated first across both job families (canonical
+    # last-update ordering; creation time then stable job ID break ties
+    # deterministically when timestamps match or are absent).
+    tasks.sort(key=_task_sort_key, reverse=True)
     return tasks[:limit]
+
+
+def _task_sort_key(task: TaskItem) -> tuple:
+    """Updated-first ordering with deterministic tie-breakers."""
+    return (
+        task.updated_at or task.updated or "",
+        task.created or task.started_at or "",
+        task.job_id or "",
+    )
+
+
+#: Task families surfaced on the Tasks page (and only these are managed
+#: by the history endpoints below — process_source and other command
+#: families are never touched).
+TASK_COMMAND_FAMILIES = (
+    "embed_source",
+    "embed_note",
+    "embed_insight",
+    "analyze_repair_reports",
+)
+
+#: Command statuses that are safe to clear: terminal history only.
+_TERMINAL_TASK_STATUSES = ("completed", "failed", "canceled")
+
+
+class ClearHistoryResult(BaseModel):
+    """Acknowledgement for clearing terminal historical task records."""
+
+    deleted: int = Field(..., description="Terminal task records removed")
+
+
+@router.delete("/tasks/history", response_model=ClearHistoryResult)
+async def clear_tasks_history():
+    """Delete terminal historical task records (Clear History).
+
+    Removes `completed`/`failed`/`canceled` command rows for the task
+    families shown on the Tasks page. Active jobs (`new`/`running`) are
+    never touched, never canceled, and never deleted; run history,
+    sources, reports, and the knowledge database are preserved. Safe to
+    call repeatedly (a second call deletes 0).
+    """
+    from open_notebook.database.repository import repo_delete, repo_query
+
+    try:
+        rows = await repo_query(
+            "SELECT id, status FROM command WHERE app = 'open_notebook' "
+            "AND name IN $names AND status IN $statuses",
+            {
+                "names": list(TASK_COMMAND_FAMILIES),
+                "statuses": list(_TERMINAL_TASK_STATUSES),
+            },
+        )
+    except Exception as e:
+        logger.error(f"Failed to list terminal tasks: {e}")
+        raise HTTPException(status_code=500, detail="Error clearing task history")
+    deleted = 0
+    for row in rows or []:
+        # Defensive: only terminal rows are ever removed, even if the
+        # query above were ever widened. Active jobs are never touched.
+        if str((row or {}).get("status") or "") not in _TERMINAL_TASK_STATUSES:
+            continue
+        try:
+            from open_notebook.database.repository import ensure_record_id
+
+            await repo_delete(ensure_record_id(str(row.get("id"))))
+            deleted += 1
+        except Exception as e:
+            logger.warning(f"Failed to delete terminal task {row.get('id')}: {e}")
+    return ClearHistoryResult(deleted=deleted)
 
 
 async def _repair_analysis_tasks(limit: int) -> List[TaskItem]:

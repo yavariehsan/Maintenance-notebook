@@ -42,4 +42,9 @@ export const tasksApi = {
     )
     return response.data
   },
+
+  clearHistory: async (): Promise<{ deleted: number }> => {
+    const response = await apiClient.delete<{ deleted: number }>('/tasks/history')
+    return response.data
+  },
 }

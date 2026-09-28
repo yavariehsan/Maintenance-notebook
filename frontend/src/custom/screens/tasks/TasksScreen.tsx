@@ -20,7 +20,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { AlertCircle, ListTodo, RefreshCw, Trash2 } from 'lucide-react'
-import { useDeleteTask, useTasks } from '@/lib/hooks/use-tasks'
+import { useDeleteTask, useClearTasksHistory, useTasks } from '@/lib/hooks/use-tasks'
 import { useTranslation } from '@/lib/hooks/use-translation'
 import { isActiveTask, type TaskItem } from '@/lib/api/tasks'
 import {
@@ -75,7 +75,9 @@ export function TasksScreen() {
   const { t } = useTranslation()
   const { data: tasks, isLoading, isError, refetch } = useTasks()
   const deleteMutation = useDeleteTask()
+  const clearHistoryMutation = useClearTasksHistory()
   const [pendingDelete, setPendingDelete] = useState<TaskItem | null>(null)
+  const [confirmClearHistory, setConfirmClearHistory] = useState(false)
 
   const renderContent = () => {
     if (isLoading) {
@@ -236,6 +238,13 @@ export function TasksScreen() {
             </div>
             {tasks && tasks.length > 0 && (
               <div className="flex gap-2">
+                <Button
+                  onClick={() => setConfirmClearHistory(true)}
+                  variant="outline"
+                  disabled={clearHistoryMutation.isPending}
+                >
+                  {t('tasks.clearHistory')}
+                </Button>
                 <Button onClick={() => refetch()} variant="outline">
                   <RefreshCw className="h-4 w-4 me-2" />
                   {t('common.refresh')}
@@ -270,6 +279,31 @@ export function TasksScreen() {
               }}
             >
               {t('tasks.deleteTask')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog open={confirmClearHistory} onOpenChange={setConfirmClearHistory}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t('tasks.clearHistoryTitle')}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t('tasks.clearHistoryDescription')}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={clearHistoryMutation.isPending}>
+              {t('common.cancel')}
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={clearHistoryMutation.isPending}
+              onClick={() => {
+                clearHistoryMutation.mutate(undefined, {
+                  onSuccess: () => setConfirmClearHistory(false),
+                })
+              }}
+            >
+              {t('tasks.clearHistory')}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

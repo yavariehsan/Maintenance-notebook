@@ -324,6 +324,131 @@ class Asset(BaseModel):
     url: Optional[str] = None
 
 
+#: Staleness lease for embed_source commands (seconds). A `running` job
+#: whose last worker write (updated_at, else started_at) is older than
+#: this is considered abandoned: the embed worker stamps started_at when
+#: it begins and rewrites updated_at on every embedding batch, so a
+#: genuinely active job always has a recent timestamp. Mirrors the
+#: repair-analysis orphan lease (RUNNING_LEASE_SECONDS); comfortably
+#: above healthy embed durations (minutes for dozens of chunks).
+EMBED_STALE_SECONDS = 1800
+
+#: Command statuses that mean "still working" for embed jobs.
+_ACTIVE_EMBED_STATUSES = ("new", "running")
+
+
+def _parse_command_time(value: Any) -> Optional[float]:
+    """SurrealDB timestamp (datetime or ISO string) → epoch seconds."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        moment = value
+        if moment.tzinfo is None:
+            from datetime import timezone
+
+            moment = moment.replace(tzinfo=timezone.utc)
+        return moment.timestamp()
+    try:
+        moment = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        from datetime import timezone
+
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.timestamp()
+
+
+def _command_last_activity(command: Dict[str, Any]) -> Optional[float]:
+    """Newest worker timestamp on a command row (progress beats start)."""
+    candidates = [
+        _parse_command_time(command.get("updated_at")),
+        _parse_command_time(command.get("started_at")),
+        _parse_command_time(command.get("created")),
+        _parse_command_time(command.get("updated")),
+    ]
+    stamps = [stamp for stamp in candidates if stamp is not None]
+    return max(stamps) if stamps else None
+
+
+async def _live_embed_command_id(source_id: str) -> Optional[str]:
+    """Existing live embed_source command for a source, if any.
+
+    Returns the most recently active command ID when a genuinely active
+    job exists. Abandoned `running` jobs (no worker write within
+    EMBED_STALE_SECONDS) are marked `failed` with an explicit reason so
+    exactly one replacement can proceed — bounded recovery that never
+    restarts work indefinitely and never touches other sources' jobs.
+    `new` jobs are always treated as live: a restarted worker resumes
+    `new` commands, so they are recoverable without intervention.
+    Returns ``None`` when no active job exists (caller submits anew).
+    """
+    from datetime import timezone
+
+    try:
+        rows = await repo_query(
+            "SELECT * FROM command WHERE app = 'open_notebook' "
+            "AND name = 'embed_source' AND args.source_id = $sid "
+            "AND status IN $statuses",
+            {
+                "sid": str(source_id),
+                "statuses": list(_ACTIVE_EMBED_STATUSES),
+            },
+        )
+    except Exception as e:
+        logger.warning(
+            f"Could not check active embed jobs for source {source_id}: {e}"
+        )
+        return None
+    if not rows:
+        return None
+    now = datetime.now(timezone.utc).timestamp()
+    live: List[Dict[str, Any]] = []
+    stale: List[Dict[str, Any]] = []
+    for row in rows or []:
+        status = str(row.get("status") or "")
+        if status == "new":
+            live.append(row)
+            continue
+        last = _command_last_activity(row)
+        if last is None or (now - last) > EMBED_STALE_SECONDS:
+            stale.append(row)
+        else:
+            live.append(row)
+    if live:
+        # Most recently active first — deterministic single survivor.
+        live.sort(
+            key=lambda row: (
+                _command_last_activity(row) or 0.0,
+                str(row.get("id") or ""),
+            ),
+            reverse=True,
+        )
+        return str(live[0].get("id"))
+    for row in stale:
+        stale_id = str(row.get("id"))
+        try:
+            await repo_query(
+                "UPDATE $cid SET status = $status, "
+                "error_message = $error, updated_at = time::now()",
+                {
+                    "cid": ensure_record_id(stale_id),
+                    "status": "failed",
+                    "error": (
+                        "Stale embed job: no worker progress within "
+                        f"{EMBED_STALE_SECONDS // 60} minutes; superseded by "
+                        "a new submission."
+                    ),
+                },
+            )
+            logger.warning(
+                f"Marked stale embed job {stale_id} failed for source {source_id}"
+            )
+        except Exception as e:
+            logger.warning(f"Could not finalize stale embed job {stale_id}: {e}")
+    return None
+
+
 class SourceEmbedding(ObjectModel):
     table_name: ClassVar[str] = "source_embedding"
     content: str
@@ -552,6 +677,14 @@ class Source(ObjectModel):
         3. Generates all embeddings in batches
         4. Bulk inserts source_embedding records
 
+        Duplicate prevention: at most one live embedding job exists per
+        source. When a genuinely active job (fresh `new`/`running` command)
+        is found, its command ID is returned instead of submitting a
+        duplicate. A job the worker abandoned (stale `running` command with
+        no recent progress, past EMBED_STALE_SECONDS) is marked failed with
+        an explicit reason before exactly one replacement is submitted, so
+        recovery stays bounded and never restarts work indefinitely.
+
         Returns:
             str: The command/job ID that can be used to track progress via the commands API
 
@@ -564,6 +697,15 @@ class Source(ObjectModel):
         try:
             if not self.full_text or not self.full_text.strip():
                 raise ValueError(f"Source {self.id} has no text to vectorize")
+
+            # Deduplicate against a genuinely active job for this source.
+            live_command_id = await _live_embed_command_id(str(self.id))
+            if live_command_id is not None:
+                logger.info(
+                    f"Embed job already active for source {self.id}: "
+                    f"command_id={live_command_id} (not submitting a duplicate)"
+                )
+                return live_command_id
 
             # Submit the embed_source command
             command_id = submit_command(

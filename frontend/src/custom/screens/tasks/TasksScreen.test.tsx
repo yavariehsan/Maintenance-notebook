@@ -7,7 +7,7 @@ import {
   getTaskStatusKind,
   getTaskStatusLabelKey,
 } from './task-helpers'
-import { useDeleteTask, useTasks } from '@/lib/hooks/use-tasks'
+import { useDeleteTask, useClearTasksHistory, useTasks } from '@/lib/hooks/use-tasks'
 import type { TaskItem } from '@/lib/api/tasks'
 
 vi.mock('@/components/layout/AppShell', () => ({
@@ -17,10 +17,12 @@ vi.mock('@/components/layout/AppShell', () => ({
 vi.mock('@/lib/hooks/use-tasks', () => ({
   useTasks: vi.fn(),
   useDeleteTask: vi.fn(),
+  useClearTasksHistory: vi.fn(),
 }))
 
 const mockUseTasks = vi.mocked(useTasks)
 const mockUseDeleteTask = vi.mocked(useDeleteTask)
+const mockUseClearHistory = vi.mocked(useClearTasksHistory)
 
 const runningTask: TaskItem = {
   job_id: 'command:run1',
@@ -104,6 +106,10 @@ function mockQuery(overrides = {}) {
     ...overrides,
   } as never)
   mockUseDeleteTask.mockReturnValue({
+    mutate: vi.fn(),
+    isPending: false,
+  } as never)
+  mockUseClearHistory.mockReturnValue({
     mutate: vi.fn(),
     isPending: false,
   } as never)
@@ -219,6 +225,41 @@ describe('TasksScreen', () => {
     const confirmButtons = screen.getAllByRole('button', { name: 'tasks.deleteTask' })
     fireEvent.click(confirmButtons[confirmButtons.length - 1])
     expect(mutate).toHaveBeenCalledWith('command:fail1', expect.anything())
+  })
+
+  it('clears terminal history through a confirm flow without touching active jobs', () => {
+    const mutate = vi.fn()
+    mockUseTasks.mockReturnValue({
+      data: [runningTask, completedTask],
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    } as never)
+    mockUseClearHistory.mockReturnValue({ mutate, isPending: false } as never)
+    render(<TasksScreen />)
+
+    // Clearly visible action; both rows stay visible until confirmed.
+    fireEvent.click(screen.getByRole('button', { name: 'tasks.clearHistory' }))
+    expect(screen.getByText('tasks.clearHistoryTitle')).toBeDefined()
+    expect(screen.getByText('tasks.clearHistoryDescription')).toBeDefined()
+    const confirmButtons = screen.getAllByRole('button', { name: 'tasks.clearHistory' })
+    fireEvent.click(confirmButtons[confirmButtons.length - 1])
+    expect(mutate).toHaveBeenCalledTimes(1)
+  })
+
+  it('renders API order so newest-updated tasks come first', () => {
+    mockUseTasks.mockReturnValue({
+      data: [failedTask, completedTask],
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    } as never)
+    render(<TasksScreen />)
+    const rows = document.querySelectorAll('tbody tr')
+    // First body row belongs to the first task in API order (the failed
+    // task spans two rows: main + error detail).
+    expect(rows[0]?.textContent).toContain('Old Report')
+    expect(rows[2]?.textContent).toContain('CMMS Report')
   })
 })
 

@@ -183,7 +183,9 @@ when the database is unavailable) ·
 `POST /repair-reports/analyze` (legacy collection-wide, 409 when busy) ·
 `GET /repair-reports/runs[/{id}]` ·
 `DELETE /tasks/{job_id}` (terminal command rows only — never files,
-reports, runs, or knowledge; 409 while active, 404 unknown).
+reports, runs, or knowledge; 409 while active, 404 unknown) ·
+`DELETE /tasks/history` (terminal task records only; active jobs kept;
+idempotent).
 
 ## Tests
 
@@ -225,10 +227,23 @@ analysis runs: analysis commands map to the same task row shape with
 `item_type: "repair_analysis"`, the linked `run_id`, and report
 filenames as the title. There are no chunk counts for analysis jobs, so
 progress stays indeterminate while active (never estimated) and reads
-100% once completed. Bounded 2s polling on both screens converges them
+100% once completed. Tasks are ordered most-recently-updated first
+(canonical `updated_at`, then creation time, then stable job ID as the
+deterministic tie-break). Bounded 2s polling on both screens converges them
 on the same truth; starting analysis additionally wakes the Tasks
 cache, and observing completion on a report detail refreshes the
 troubleshooting guide caches.
+
+Embedding jobs are deduplicated per source: submitting `/embed` while a
+genuinely active (`new`/fresh `running`) embed job exists for the same
+source returns the live command ID instead of a duplicate. A `running`
+job with no worker write for over 30 minutes is declared abandoned,
+marked `failed` with an explicit reason, and replaced by exactly one
+new job — bounded recovery that never restarts work indefinitely.
+`Clear History` (`DELETE /api/tasks/history`, confirmed in the UI)
+removes terminal (`completed`/`failed`/`canceled`) task records only;
+active jobs are kept, never canceled or deleted, and the operation is
+idempotent.
 
 Rules: starting analysis marks the included report `queued`
 immediately (both screens converge through bounded 2s polling; the

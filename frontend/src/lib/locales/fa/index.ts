@@ -1032,6 +1032,11 @@ export const fa = {
     deleteTaskDescription: "رکورد کار پس‌زمینه حذف می‌شود. فایل‌های منبع، گزارشات تعمیر و دانش تولیدشده هرگز دست نمی‌خورند.",
     deleteSuccess: "رکورد وظیفه حذف شد.",
     deleteFailed: "حذف وظیفه ناموفق بود.",
+    clearHistory: "پاک‌سازی سوابق",
+    clearHistoryTitle: "سوابق پایانی وظایف پاک شود؟",
+    clearHistoryDescription: "رکوردهای تکمیل‌شده، ناموفق و لغوشده حذف می‌شوند. کارهای فعال حفظ شده و هرگز لغو نمی‌شوند.",
+    clearHistorySuccess: "{{count}} سابقه پاک شد.",
+    clearHistoryFailed: "پاک‌سازی سوابق وظایف ناموفق بود.",
   },
   transformations: {
     title: "تبدیل‌ها",

@@ -1027,6 +1027,11 @@ export const en = {
     deleteTaskDescription: "The background-job record will be removed. Source files, repair reports and generated knowledge are never touched.",
     deleteSuccess: "Task record deleted.",
     deleteFailed: "Failed to delete task.",
+    clearHistory: "Clear History",
+    clearHistoryTitle: "Clear terminal task history?",
+    clearHistoryDescription: "Completed, failed and cancelled task records will be removed. Active jobs are kept and never cancelled.",
+    clearHistorySuccess: "Cleared {{count}} historical task(s).",
+    clearHistoryFailed: "Failed to clear task history.",
   },
   transformations: {
     title: "Transformations",
