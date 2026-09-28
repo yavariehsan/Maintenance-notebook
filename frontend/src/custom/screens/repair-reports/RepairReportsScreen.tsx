@@ -1,18 +1,29 @@
 'use client'
 
-import { useRef } from 'react'
+import { useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 
 import { AppShell } from '@/components/layout/AppShell'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import { EmptyState } from '@/components/common/EmptyState'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
-import { AlertCircle, FileSpreadsheet, RefreshCw, Upload } from 'lucide-react'
+import { AlertCircle, FileSpreadsheet, RefreshCw, Trash2, Upload } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 import { getDateLocale } from '@/lib/utils/date-locale'
 import {
+  useDeleteRepairReport,
   useRepairReports,
   useUploadRepairReport,
 } from '@/lib/hooks/use-repair-reports'
@@ -22,9 +33,11 @@ import type { RepairReport } from '@/lib/api/repair-reports'
 
 /**
  * Downstream repair-reports collection screen (گردآوری → گزارشات تعمیر).
- * Lists uploaded repair-history workbooks with their analysis states and
- * uploads new ones. Reuses upstream AppShell, table, Badge, EmptyState
- * and Alert primitives — no second list architecture.
+ * Lists uploaded repair-history workbooks with their analysis states,
+ * uploads new ones, and deletes reports by stable record ID (never by
+ * filename alone) through an explicit confirm dialog. Reuses upstream
+ * AppShell, table, Badge, EmptyState and Alert primitives — no second
+ * list architecture.
  */
 function statusLabelKey(state: RepairReport['analysis_state']): string {
   switch (state) {
@@ -49,6 +62,8 @@ export function RepairReportsScreen() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const { data: reports, isLoading, isError, refetch } = useRepairReports()
   const uploadMutation = useUploadRepairReport()
+  const deleteMutation = useDeleteRepairReport()
+  const [pendingDelete, setPendingDelete] = useState<RepairReport | null>(null)
 
   const handlePickFile = () => fileInputRef.current?.click()
 
@@ -114,7 +129,7 @@ export function RepairReportsScreen() {
     }
     return (
       <div className="rounded-md border border-[var(--custom-border)] bg-[var(--custom-surface)] overflow-auto">
-        <table className="w-full min-w-[720px] outline-none table-fixed">
+        <table className="w-full min-w-[800px] outline-none table-fixed">
           <thead className="sticky top-0 bg-background z-10">
             <tr className="border-b">
               <th className="h-12 px-4 text-start align-middle font-medium text-muted-foreground">
@@ -129,10 +144,16 @@ export function RepairReportsScreen() {
               <th className="h-12 px-4 text-start align-middle font-medium text-muted-foreground w-[150px] hidden sm:table-cell">
                 {t('repairReports.updatedColumn')}
               </th>
+              <th className="h-12 px-4 text-start align-middle font-medium text-muted-foreground w-[90px]">
+                <span className="sr-only">{t('repairReports.deleteReport')}</span>
+              </th>
             </tr>
           </thead>
           <tbody>
-            {reports.map((report) => (
+            {reports.map((report) => {
+              const deletable =
+                report.analysis_state !== 'queued' && report.analysis_state !== 'processing'
+              return (
               <tr
                 key={report.id}
                 className="border-b transition-colors hover:bg-[var(--surface-raised)] cursor-pointer"
@@ -162,8 +183,27 @@ export function RepairReportsScreen() {
                       })
                     : '—'}
                 </td>
+                <td className="h-12 px-4">
+                  {deletable ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      aria-label={t('repairReports.deleteReport')}
+                      disabled={deleteMutation.isPending}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        setPendingDelete(report)
+                      }}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  ) : (
+                    <span className="text-sm text-muted-foreground">—</span>
+                  )}
+                </td>
               </tr>
-            ))}
+              )
+            })}
           </tbody>
         </table>
       </div>
@@ -203,6 +243,38 @@ export function RepairReportsScreen() {
           {renderBody()}
         </div>
       </div>
+      <AlertDialog open={pendingDelete !== null} onOpenChange={(open) => { if (!open) setPendingDelete(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t('repairReports.deleteReportTitle')}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t('repairReports.deleteReportDescription')}
+              {pendingDelete && (
+                <span className="mt-2 block font-mono text-xs">
+                  {pendingDelete.filename}
+                </span>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleteMutation.isPending}>
+              {t('common.cancel')}
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={deleteMutation.isPending}
+              onClick={() => {
+                if (pendingDelete) {
+                  deleteMutation.mutate(pendingDelete.id, {
+                    onSuccess: () => setPendingDelete(null),
+                  })
+                }
+              }}
+            >
+              {t('repairReports.deleteReport')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </AppShell>
   )
 }

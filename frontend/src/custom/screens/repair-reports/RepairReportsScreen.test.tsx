@@ -1,7 +1,11 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { RepairReportsScreen } from './RepairReportsScreen'
-import { useRepairReports, useUploadRepairReport } from '@/lib/hooks/use-repair-reports'
+import {
+  useDeleteRepairReport,
+  useRepairReports,
+  useUploadRepairReport,
+} from '@/lib/hooks/use-repair-reports'
 import type { RepairReport } from '@/lib/api/repair-reports'
 
 vi.mock('@/components/layout/AppShell', () => ({
@@ -12,13 +16,17 @@ vi.mock('@/lib/hooks/use-repair-reports', () => ({
   useRepairReports: vi.fn(),
   useRepairReport: vi.fn(),
   useRepairReportPreview: vi.fn(),
+  useRepairReportActions: vi.fn(),
   useRepairAnalysisRuns: vi.fn(),
   useUploadRepairReport: vi.fn(),
   useStartRepairAnalysis: vi.fn(),
+  useStartSingleReportAnalysis: vi.fn(),
+  useDeleteRepairReport: vi.fn(),
 }))
 
 const mockUseRepairReports = vi.mocked(useRepairReports)
 const mockUseUpload = vi.mocked(useUploadRepairReport)
+const mockUseDelete = vi.mocked(useDeleteRepairReport)
 
 const report = (overrides: Partial<RepairReport> = {}): RepairReport => ({
   id: 'repair_report:abc',
@@ -48,6 +56,10 @@ function mockList(data: RepairReport[] | undefined, states = {}) {
     reset: vi.fn(),
     isPending: false,
   } as unknown as ReturnType<typeof useUploadRepairReport>)
+  mockUseDelete.mockReturnValue({
+    mutate: vi.fn(),
+    isPending: false,
+  } as unknown as ReturnType<typeof useDeleteRepairReport>)
 }
 
 describe('RepairReportsScreen', () => {
@@ -88,5 +100,31 @@ describe('RepairReportsScreen', () => {
     mockList(undefined, { isError: true })
     render(<RepairReportsScreen />)
     expect(screen.getByText('repairReports.loadFailed')).toBeInTheDocument()
+  })
+
+  it('offers delete for idle reports but not for active ones', () => {
+    mockList([
+      report({ id: 'repair_report:a', analysis_state: 'not_analyzed' }),
+      report({ id: 'repair_report:b', filename: 'b.xlsx', analysis_state: 'processing' }),
+    ])
+    render(<RepairReportsScreen />)
+    // One delete button (idle report); the processing row shows an em dash.
+    expect(screen.getAllByRole('button', { name: 'repairReports.deleteReport' })).toHaveLength(1)
+  })
+
+  it('deletes a report through the confirm flow by stable ID', () => {
+    mockList([report({ id: 'repair_report:abc' })])
+    const mutate = vi.fn()
+    mockUseDelete.mockReturnValue({
+      mutate,
+      isPending: false,
+    } as unknown as ReturnType<typeof useDeleteRepairReport>)
+    render(<RepairReportsScreen />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'repairReports.deleteReport' }))
+    expect(screen.getByText('repairReports.deleteReportTitle')).toBeInTheDocument()
+    const confirmButtons = screen.getAllByRole('button', { name: 'repairReports.deleteReport' })
+    fireEvent.click(confirmButtons[confirmButtons.length - 1])
+    expect(mutate).toHaveBeenCalledWith('repair_report:abc', expect.anything())
   })
 })

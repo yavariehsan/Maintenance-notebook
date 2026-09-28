@@ -62,6 +62,9 @@ class CauseActionItem(BaseModel):
         default_factory=list, description="Supporting record IDs"
     )
     frequency: Optional[int] = Field(None, description="Supporting record count")
+    guide_instruction: Optional[str] = Field(
+        None, description="Guide-facing synthesized instruction, when approved"
+    )
 
 
 class CauseEvidenceItem(BaseModel):

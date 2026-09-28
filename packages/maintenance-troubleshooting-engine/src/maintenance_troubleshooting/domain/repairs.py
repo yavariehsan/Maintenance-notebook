@@ -68,6 +68,15 @@ class RepairAction:
     equipment_code: str = ""
     failure_mode_id: str = ""
     secondary_categories: list[ActionCategory] = field(default_factory=list)
+    guide_instruction: str | None = None
+    """Guide-facing synthesized instruction (M11C-6R2 Part B).
+
+    Deterministic, evidence-grounded imperative/conditional rendering of
+    this action's own sentence for the approved narrow shape only
+    (``None`` otherwise). The original ``action_text`` is always kept
+    verbatim; this field never replaces history/evidence, only adds the
+    guide-facing presentation with its source links intact.
+    """
 
     @property
     def evidence_count(self) -> int:
@@ -105,9 +114,10 @@ class TechnicalVerification:
     """A verification step attested by a historical sentence (M11C D4).
 
     Emitted only for expert-approved triggers: the canonical
-    test-and-handover sentence, or a test/outcome marker co-occurring in
-    a sentence that also yields a technical RepairAction. Standalone
-    ``تست شد`` without a decided rule yields nothing (open question).
+    test-and-handover sentence, standalone ``تست شد`` (M11C-6R2 final),
+    or a test/outcome marker co-occurring in a sentence that also yields
+    a technical RepairAction. Standalone closure phrasing never yields a
+    recommended RepairAction.
     """
 
     verification_id: str

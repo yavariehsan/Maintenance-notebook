@@ -322,6 +322,7 @@ def _convert_action(action: dict[str, Any]) -> dict[str, Any]:
         "action_text": action.get("action_text"),
         "source_record_ids": _parse_id_list(action.get("source_record_ids_json")),
         "frequency": action.get("frequency"),
+        "guide_instruction": action.get("guide_instruction"),
     }
 
 

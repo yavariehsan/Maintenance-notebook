@@ -129,18 +129,50 @@ Concept model (do not conflate):
   with support/probability/confidence.
 - **Repair action**: one diagnostic/corrective/verification step mined
   from historical repair descriptions (role + frequency + source
-  records).
+  records). Standalone `تست شد` is kept in history and emitted as a
+  `TechnicalVerification` (never a recommended action); `تست و تحویل
+  شد` yields a verification plus a handover event.
 - **Troubleshooting guide**: the synthesized presentation — failure/
   symptom, ranked candidate causes, the unified recommended-action
   procedure (distinct actions across causes, ordered by cause rank then
   frequency; roles and record refs passed through, never rescored),
   historical evidence/provenance, safety notes when available, and the
   evidence-sufficiency state. Causes are a component of the guide, never
-  the guide itself.
+  the guide itself. For the single approved shape (uncompleted
+  replacement + switch adjustment + test/handover), the procedure shows
+  a deterministic guide-facing instruction
+  (`در صورت عدم تعویض پالت، سوئیچ بررسی و در صورت لزوم تنظیم گردد.`)
+  with the verbatim recorded action linked beneath it — originals are
+  never rewritten.
+
+## Report deletion
+
+`DELETE /repair-reports/{id}` deletes one uploaded report by its stable
+record ID (never by filename alone): the report record and its stored
+workbook are removed, so the report disappears from the normal listing.
+Run history, task/command rows, and the generated knowledge database
+are preserved; guides already generated keep pointing at the stored
+record IDs, and the Repair Guide source selector reports a deleted
+source as unavailable instead of remapping it to another same-named
+file. 404 for unknown reports, 409 while the report is being analyzed
+(queued/processing or snapshotted by the live run).
+
+## Repair Guide source selection
+
+The Repair Guide screen opens with a source-report selector (Step 0)
+listing uploaded repair reports by stable record ID, each labeled with
+filename, row count, upload time, and short ID so duplicate filenames
+stay distinguishable. A context line names the report(s) backing the
+current knowledge database (latest completed run); a backing source
+that was deleted renders a warning and is never remapped. Selecting a
+source outside the backing run hides the guides (mismatch state)
+instead of showing another source's knowledge; with no completed run
+known, browsing behaves as before.
 
 ## Endpoints (all under `/api`)
 
 `POST /repair-reports` · `GET /repair-reports` ·
+`DELETE /repair-reports/{id}` (404 unknown, 409 while analyzing) ·
 `GET /repair-reports/{id}` (+ latest run) ·
 `GET /repair-reports/{id}/preview` ·
 `POST /repair-reports/{id}/analyze` (409 when busy, 404 unknown, 400
@@ -215,7 +247,10 @@ failed, and its command row flipped to `failed` (a restarted worker
 only resumes `new` commands, and the worker refuses to complete a run
 that is no longer `processing`, so resurrection is impossible). A lost
 source file fails its run loudly; restore the file and retry — there is
-deliberately no silent subset regeneration and no report deletion yet.
+deliberately no silent subset regeneration. Report deletion removes the
+report record and its stored file; run/task history and the knowledge
+database are preserved, and deleted sources are reported as
+unavailable, never remapped.
 
 Operational notes (observed on native Windows, not hypothetical):
 

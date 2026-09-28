@@ -4,6 +4,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RepairReportDetailScreen } from './RepairReportDetailScreen'
 import {
+  useDeleteRepairReport,
   useRepairReport,
   useRepairReportActions,
   useRepairReportPreview,
@@ -28,12 +29,14 @@ vi.mock('@/lib/hooks/use-repair-reports', () => ({
   useUploadRepairReport: vi.fn(),
   useStartRepairAnalysis: vi.fn(),
   useStartSingleReportAnalysis: vi.fn(),
+  useDeleteRepairReport: vi.fn(),
 }))
 
 const mockUseReport = vi.mocked(useRepairReport)
 const mockUsePreview = vi.mocked(useRepairReportPreview)
 const mockUseActions = vi.mocked(useRepairReportActions)
 const mockUseAnalyze = vi.mocked(useStartSingleReportAnalysis)
+const mockUseDeleteReport = vi.mocked(useDeleteRepairReport)
 
 function makeWrapper() {
   const client = new QueryClient({
@@ -133,6 +136,10 @@ function mockHooks(state: RepairReport['analysis_state']) {  mockUseReport.mockR
     mutate: vi.fn(),
     isPending: false,
   } as unknown as ReturnType<typeof useStartSingleReportAnalysis>)
+  mockUseDeleteReport.mockReturnValue({
+    mutate: vi.fn(),
+    isPending: false,
+  } as unknown as ReturnType<typeof useDeleteRepairReport>)
 }
 
 describe('RepairReportDetailScreen', () => {

@@ -130,7 +130,8 @@ CREATE TABLE repair_actions (
     normalized_text TEXT NOT NULL,
     source_record_ids_json TEXT NOT NULL,
     frequency INTEGER NOT NULL,
-    secondary_categories_json TEXT NOT NULL DEFAULT '[]'
+    secondary_categories_json TEXT NOT NULL DEFAULT '[]',
+    guide_instruction TEXT
 );
 
 CREATE TABLE guide_verifications (
@@ -463,14 +464,16 @@ class OutputDatabaseWriter:
                     [category.value for category in action.secondary_categories],
                     ensure_ascii=False,
                 ),
+                action.guide_instruction,
             )
             for action in sorted(context.repair_actions, key=lambda a: a.action_id)
         ]
         connection.executemany(
             """INSERT INTO repair_actions (id, equipment_code, failure_mode_id,
                category, role, action_text, normalized_text,
-               source_record_ids_json, frequency, secondary_categories_json)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+               source_record_ids_json, frequency, secondary_categories_json,
+               guide_instruction)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             rows,
         )
         links = sorted(set(context.cause_repair_links))

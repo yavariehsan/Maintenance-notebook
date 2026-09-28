@@ -410,6 +410,62 @@ async def read_report_file(report_id: str) -> bytes:
     return await asyncio.to_thread(path.read_bytes)
 
 
+async def delete_report(report_id: str) -> Dict[str, Any]:
+    """Delete one uploaded repair report by its stable record ID.
+
+    Removes the ``repair_report`` record and its stored workbook file.
+    Identity is the record ID (never the filename alone), so deleting
+    one of several same-named uploads removes exactly that upload.
+    Analysis-run history, task/command rows, and the generated knowledge
+    database are preserved untouched (referential integrity for analysis
+    artifacts); guides already generated keep pointing at the stored
+    record IDs, and the Repair Guide source selector reports the deleted
+    source as unavailable instead of remapping it.
+
+    Raises ``NotFoundError`` for unknown reports and
+    ``AnalysisInProgressError`` (router maps to 409) when the report is
+    currently being analyzed (queued/processing state or included in the
+    active run).
+    """
+    try:
+        internal = await _get_report_internal(report_id)
+    except NotFoundError:
+        raise
+    except Exception as e:
+        raise NotFoundError(f"Unknown repair report: {report_id}.") from e
+    resolved_id = str(internal["id"])
+    state = str(internal.get("analysis_state") or STATE_NOT_ANALYZED)
+    if state in ACTIVE_REPORT_STATES:
+        raise AnalysisInProgressError(
+            "This report is currently being analyzed and cannot be deleted."
+        )
+    active = await get_active_run()
+    if active is not None and resolved_id in [
+        str(item) for item in active.get("report_ids") or []
+    ]:
+        raise AnalysisInProgressError(
+            "This report is currently being analyzed and cannot be deleted."
+        )
+    # Remove the stored workbook first (best effort — a missing blob must
+    # not block record deletion); the record is the source of truth for
+    # the listing.
+    try:
+        path = stored_path(internal)
+        if path.exists():
+            await asyncio.to_thread(path.unlink)
+    except Exception as e:
+        logger.warning(f"Could not remove stored file for {resolved_id}: {e}")
+    from open_notebook.database.repository import repo_delete
+
+    try:
+        await repo_delete(ensure_record_id(resolved_id))
+    except Exception as e:
+        logger.error(f"Failed to delete repair report {resolved_id}: {e}")
+        raise RuntimeError(f"Failed to delete repair report: {e}") from e
+    logger.info(f"Deleted repair report {resolved_id}")
+    return {"id": resolved_id, "deleted": True}
+
+
 # --- analysis runs ---------------------------------------------------------
 
 
@@ -967,6 +1023,58 @@ def _parse_json_id_list(raw: Any) -> List[str]:
     return [str(item) for item in parsed]
 
 
+def _stored_or_synthesized_instruction(item: Dict[str, Any]) -> Optional[str]:
+    """Stored guide instruction, or the deterministic fallback.
+
+    Prefers the ``guide_instruction`` column written by current
+    databases (M11C-6R2 Part B); for older databases without the column
+    derives it with the same pure engine rule over the stored verbatim
+    text. ``None`` outside the approved shape; never raises.
+    """
+    stored = item.get("guide_instruction")
+    if isinstance(stored, str) and stored:
+        return stored
+    try:
+        import sys
+        from pathlib import Path as _Path
+
+        try:
+            from maintenance_troubleshooting.stages.guide_instructions import (
+                synthesize_guide_instruction,
+            )
+            from maintenance_troubleshooting.text import SimpleTokenizer
+        except ImportError:
+            candidate = (
+                _Path(__file__).resolve().parent.parent
+                / "packages"
+                / "maintenance-troubleshooting-engine"
+                / "src"
+            )
+            if candidate.is_dir() and str(candidate) not in sys.path:
+                sys.path.insert(0, str(candidate))
+            from maintenance_troubleshooting.stages.guide_instructions import (
+                synthesize_guide_instruction,
+            )
+            from maintenance_troubleshooting.text import SimpleTokenizer
+
+        raw_secondary = item.get("secondary_categories_json")
+        try:
+            secondary = json.loads(raw_secondary) if isinstance(raw_secondary, str) else []
+        except (ValueError, TypeError):
+            secondary = []
+        if not isinstance(secondary, list):
+            secondary = []
+        action_text = str(item.get("action_text") or "")
+        return synthesize_guide_instruction(
+            action_text,
+            SimpleTokenizer().tokenize(action_text.lower()),
+            primary_is_replace=(str(item.get("category") or "") == "replace"),
+            has_adjust=("adjust" in secondary),
+        )
+    except Exception:
+        return None
+
+
 async def _latest_completed_run() -> Optional[Dict[str, Any]]:
     """Newest completed analysis run, or ``None`` when none exists."""
     rows = await repo_query(
@@ -1137,6 +1245,7 @@ async def get_report_actions(report_id: str) -> Dict[str, Any]:
                 "action_text": item.get("action_text"),
                 "source_record_ids": sorted(set(source_ids) & report_set),
                 "frequency": item.get("frequency"),
+                "guide_instruction": _stored_or_synthesized_instruction(item),
             }
         )
     repair_actions.sort(

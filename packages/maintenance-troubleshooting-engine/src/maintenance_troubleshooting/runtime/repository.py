@@ -73,6 +73,43 @@ class GuideView:
     post_repair_events: list[dict[str, Any]] = field(default_factory=list)
 
 
+def _synthesize_for_stored_action(
+    action_text: str, category: str, secondary_categories_json: Any
+) -> str | None:
+    """Deterministic guide instruction for a stored action row.
+
+    Read-path fallback for databases that predate the stored
+    ``guide_instruction`` column: runs the same pure M11C-6R2 rule over
+    the stored verbatim text. Returns ``None`` outside the approved
+    shape; never raises (a malformed row simply has no instruction).
+    """
+    try:
+        from maintenance_troubleshooting.stages.guide_instructions import (
+            synthesize_guide_instruction,
+        )
+        from maintenance_troubleshooting.text import SimpleTokenizer
+
+        try:
+            secondary = (
+                json.loads(secondary_categories_json)
+                if isinstance(secondary_categories_json, str)
+                else []
+            )
+        except (ValueError, TypeError):
+            secondary = []
+        if not isinstance(secondary, list):
+            secondary = []
+        tokens = SimpleTokenizer().tokenize(action_text.lower())
+        return synthesize_guide_instruction(
+            action_text,
+            tokens,
+            primary_is_replace=(category == "replace"),
+            has_adjust=("adjust" in secondary),
+        )
+    except Exception:
+        return None
+
+
 class TroubleshootingRepository:
     """Read-only access to a generated troubleshooting database."""
 
@@ -172,16 +209,31 @@ class TroubleshootingRepository:
         return [self._cause_view(dict(row)) for row in rows]
 
     def _cause_view(self, row: dict[str, Any]) -> CauseView:
-        actions = self._connection.execute(
-            """SELECT ra.id, ra.category, ra.role, ra.action_text,
-                      ra.secondary_categories_json, ra.source_record_ids_json,
-                      ra.frequency
-               FROM cause_repair_actions cra
-               JOIN repair_actions ra ON ra.id = cra.repair_action_id
-               WHERE cra.cause_id = ?
-               ORDER BY ra.frequency DESC, ra.action_text""",
-            (row["id"],),
-        ).fetchall()
+        try:
+            actions = self._connection.execute(
+                """SELECT ra.id, ra.category, ra.role, ra.action_text,
+                          ra.secondary_categories_json, ra.source_record_ids_json,
+                          ra.frequency, ra.guide_instruction
+                   FROM cause_repair_actions cra
+                   JOIN repair_actions ra ON ra.id = cra.repair_action_id
+                   WHERE cra.cause_id = ?
+                   ORDER BY ra.frequency DESC, ra.action_text""",
+                (row["id"],),
+            ).fetchall()
+        except sqlite3.Error:
+            # Databases generated before the guide_instruction column
+            # (M11C-6R2 Part B) predate it: read without it and derive
+            # the instruction deterministically below.
+            actions = self._connection.execute(
+                """SELECT ra.id, ra.category, ra.role, ra.action_text,
+                          ra.secondary_categories_json, ra.source_record_ids_json,
+                          ra.frequency
+                   FROM cause_repair_actions cra
+                   JOIN repair_actions ra ON ra.id = cra.repair_action_id
+                   WHERE cra.cause_id = ?
+                   ORDER BY ra.frequency DESC, ra.action_text""",
+                (row["id"],),
+            ).fetchall()
         evidence = self._connection.execute(
             """SELECT e.id, e.record_id, e.equipment_code, e.relevance_basis,
                       e.relevance_detail, e.weight, mr.symptom_text,
@@ -207,9 +259,26 @@ class TroubleshootingRepository:
             confidence=row["confidence_value"],
             probability=row["probability"],
             rank=row["rank"],
-            actions=[dict(action) for action in actions],
+            actions=[self._action_view(dict(action)) for action in actions],
             evidence=[dict(item) for item in evidence],
         )
+
+    @staticmethod
+    def _action_view(action: dict[str, Any]) -> dict[str, Any]:
+        """Action row → view dict with guide instruction resolved.
+
+        Prefers the stored ``guide_instruction`` (M11C-6R2 Part B); when
+        the database predates the column or the value is NULL, derives it
+        deterministically from the stored action text with the same pure
+        rule — never invented, ``None`` outside the approved shape.
+        """
+        if action.get("guide_instruction") is None:
+            action["guide_instruction"] = _synthesize_for_stored_action(
+                str(action.get("action_text") or ""),
+                str(action.get("category") or ""),
+                action.get("secondary_categories_json"),
+            )
+        return action
 
     def list_evidence(
         self, equipment_code: str, failure_mode_id: str

@@ -28,6 +28,30 @@ vi.mock('@/lib/hooks/use-troubleshooting', () => ({
   useTroubleshootingEvidence: vi.fn(),
 }))
 
+vi.mock('@/lib/hooks/use-repair-reports', () => ({
+  useRepairReports: vi.fn(),
+  useRepairReport: vi.fn(),
+  useRepairReportPreview: vi.fn(),
+  useRepairReportActions: vi.fn(),
+  useRepairAnalysisRuns: vi.fn(),
+  useUploadRepairReport: vi.fn(),
+  useStartRepairAnalysis: vi.fn(),
+  useStartSingleReportAnalysis: vi.fn(),
+  useDeleteRepairReport: vi.fn(),
+}))
+
+import {
+  useRepairAnalysisRuns,
+  useRepairReports,
+} from '@/lib/hooks/use-repair-reports'
+import type {
+  RepairAnalysisRun,
+  RepairReport,
+} from '@/lib/api/repair-reports'
+
+const mockSourceReports = vi.mocked(useRepairReports)
+const mockAnalysisRuns = vi.mocked(useRepairAnalysisRuns)
+
 const mockStatus = vi.mocked(useTroubleshootingStatus)
 const mockEquipment = vi.mocked(useTroubleshootingEquipment)
 const mockModes = vi.mocked(useTroubleshootingFailureModes)
@@ -84,6 +108,7 @@ const guide: TroubleshootingGuide = {
           action_text: 'منبع تغذیه تعویض شد',
           source_record_ids: ['k-B-1'],
           frequency: 1,
+          guide_instruction: null,
         },
       ],
       evidence: [
@@ -121,6 +146,7 @@ const guide: TroubleshootingGuide = {
           action_text: 'منبع تغذیه تعویض شد',
           source_record_ids: ['k-B-2'],
           frequency: 1,
+          guide_instruction: null,
         },
         {
           id: 'a-2',
@@ -129,6 +155,7 @@ const guide: TroubleshootingGuide = {
           action_text: 'سیم‌کشی بررسی شد',
           source_record_ids: ['k-B-2'],
           frequency: 3,
+          guide_instruction: null,
         },
       ],
       evidence: [],
@@ -151,6 +178,8 @@ function mockAll(overrides: {
   equipmentData?: TroubleshootingEquipment[] | undefined
   modesData?: TroubleshootingFailureMode[] | undefined
   guideData?: TroubleshootingGuide | undefined
+  sourceReports?: RepairReport[] | undefined
+  analysisRuns?: RepairAnalysisRun[] | undefined
 } = {}) {
   mockStatus.mockReturnValue({
     data: overrides.status ?? available,
@@ -176,6 +205,58 @@ function mockAll(overrides: {
     isError: false,
     refetch: vi.fn(),
   } as unknown as ReturnType<typeof useTroubleshootingGuide>)
+  mockSourceReports.mockReturnValue({
+    data: overrides.sourceReports ?? [],
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(),
+  } as unknown as ReturnType<typeof useRepairReports>)
+  mockAnalysisRuns.mockReturnValue({
+    data: overrides.analysisRuns ?? [],
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(),
+  } as unknown as ReturnType<typeof useRepairAnalysisRuns>)
+}
+
+const sourceA: RepairReport = {
+  id: 'repair_report:aaa',
+  filename: 'cmms.xlsx',
+  size_bytes: 1024,
+  sheet: 'Sheet1',
+  column_count: 9,
+  data_rows: 4,
+  analysis_state: 'completed',
+  last_run_id: 'repair_analysis_run:runA',
+  last_error: null,
+  created: '2026-09-26T00:00:00',
+  updated: '2026-09-26T00:00:00',
+}
+
+const sourceB: RepairReport = {
+  ...sourceA,
+  id: 'repair_report:bbb',
+  data_rows: 7,
+  created: '2026-09-27T00:00:00',
+  last_run_id: 'repair_analysis_run:runB',
+}
+
+function completedRun(id: string, reportIds: string[]): RepairAnalysisRun {
+  return {
+    id,
+    report_ids: reportIds,
+    manifest: [],
+    status: 'completed',
+    command_id: 'command:1',
+    error: null,
+    record_count: 4,
+    equipment_count: 1,
+    failure_mode_count: 1,
+    guide_count: 1,
+    created: '2026-09-27T00:00:00',
+    started_at: null,
+    finished_at: '2026-09-27T00:01:00',
+  }
 }
 
 describe('TroubleshootingGuideScreen', () => {
@@ -306,5 +387,94 @@ describe('TroubleshootingGuideScreen', () => {
         screen.getByText('troubleshootingGuide.noFailureModesTitle'),
       ).toBeInTheDocument()
     })
+  })
+
+  it('lists uploaded sources with ID-stable values and duplicate context', async () => {
+    mockAll({
+      modesData: [],
+      sourceReports: [sourceA, sourceB],
+      analysisRuns: [completedRun('repair_analysis_run:runB', ['repair_report:bbb'])],
+    })
+    render(<TroubleshootingGuideScreen />)
+
+    expect(screen.getByText('troubleshootingGuide.selectSourceTitle')).toBeInTheDocument()
+    // The backing run names its source (mock t renders the key); both
+    // same-named files stay listed once the selector opens.
+    expect(screen.getByText('troubleshootingGuide.sourceBacksDb')).toBeInTheDocument()
+    fireEvent.click(screen.getAllByRole('combobox')[0])
+    const options = await screen.findAllByRole('option')
+    expect(options).toHaveLength(2)
+    // Duplicate filenames remain distinguishable (rows, date, short ID).
+    expect(options[0].textContent).toContain('cmms.xlsx')
+    expect(options[1].textContent).toContain('cmms.xlsx')
+    expect(options[0].textContent).not.toBe(options[1].textContent)
+  })
+
+  it('hides guides when the selected source is not the backing source', async () => {
+    mockAll({
+      modesData: modes,
+      guideData: guide,
+      sourceReports: [sourceA, sourceB],
+      analysisRuns: [completedRun('repair_analysis_run:runB', ['repair_report:bbb'])],
+    })
+    render(<TroubleshootingGuideScreen />)
+
+    // Select source A while the database was generated from source B.
+    fireEvent.click(screen.getAllByRole('combobox')[0])
+    fireEvent.click(await screen.findByRole('option', { name: /2026-09-26/ }))
+    await waitFor(() => {
+      expect(
+        screen.getByText('troubleshootingGuide.sourceMismatchTitle'),
+      ).toBeInTheDocument()
+    })
+    // No guides from source B leak through.
+    expect(screen.queryByText('troubleshootingGuide.selectEquipmentTitle')).not.toBeInTheDocument()
+  })
+
+  it('warns without remapping when the backing source was deleted', () => {
+    mockAll({
+      modesData: [],
+      sourceReports: [sourceA],
+      analysisRuns: [completedRun('repair_analysis_run:runX', ['repair_report:gone'])],
+    })
+    render(<TroubleshootingGuideScreen />)
+
+    expect(screen.getByText('troubleshootingGuide.sourceDeletedWarning')).toBeInTheDocument()
+    // The deleted ID never resolves to the surviving same-named file:
+    // no backing-source line is rendered for the missing ID.
+    expect(screen.queryByText('troubleshootingGuide.sourceBacksDb')).not.toBeInTheDocument()
+  })
+
+  it('shows the no-sources empty state when nothing was uploaded', () => {
+    mockAll({ modesData: [], sourceReports: [], analysisRuns: [] })
+    render(<TroubleshootingGuideScreen />)
+    expect(screen.getByText('troubleshootingGuide.noSourcesTitle')).toBeInTheDocument()
+  })
+
+  it('renders the synthesized instruction with its recorded-action link', async () => {
+    const instructed = JSON.parse(JSON.stringify(guide)) as typeof guide
+    instructed.causes[0].actions[0] = {
+      ...instructed.causes[0].actions[0],
+      guide_instruction: 'در صورت عدم تعویض پالت، سوئیچ بررسی و در صورت لزوم تنظیم گردد.',
+    }
+    mockAll({ modesData: modes, guideData: instructed })
+    render(<TroubleshootingGuideScreen />)
+
+    fireEvent.click(screen.getByRole('combobox'))
+    fireEvent.click(await screen.findByRole('option', { name: 'B104' }))
+    const boxes = screen.getAllByRole('combobox')
+    fireEvent.click(boxes[boxes.length - 1])
+    fireEvent.click(await screen.findByRole('option', { name: /روشن نشدن/ }))
+    await waitFor(() => {
+      expect(
+        screen.getByText('troubleshootingGuide.recommendedActionsTitle'),
+      ).toBeInTheDocument()
+    })
+    const unified = screen.getByTestId('recommended-actions')
+    expect(unified.textContent).toMatch(/در صورت عدم تعویض پالت/)
+    // Original recorded action stays linked beneath the instruction
+    // (mock t renders the basedOn key) with source record refs intact.
+    expect(unified.textContent).toMatch(/troubleshootingGuide\.basedOnLabel/)
+    expect(unified.textContent).toMatch(/k-B-1/)
   })
 })

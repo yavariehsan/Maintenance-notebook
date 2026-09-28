@@ -89,6 +89,7 @@ export interface ReportRepairAction {
   action_text: string | null
   source_record_ids: string[]
   frequency: number | null
+  guide_instruction: string | null
 }
 
 export interface ReportVerification {
@@ -163,6 +164,11 @@ export const repairReportsApi = {
 
   getActions: async (id: string): Promise<ReportActions> => {
     const response = await apiClient.get<ReportActions>(`${reportPath(id)}/actions`)
+    return response.data
+  },
+
+  deleteReport: async (id: string): Promise<{ id: string; deleted: boolean }> => {
+    const response = await apiClient.delete<{ id: string; deleted: boolean }>(reportPath(id))
     return response.data
   },
 

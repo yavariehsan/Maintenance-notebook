@@ -17,6 +17,7 @@ vi.mock('@/lib/api/client', () => ({
 
 const getMock = vi.mocked(apiClient.get)
 const postMock = vi.mocked(apiClient.post)
+const deleteMock = vi.mocked(apiClient.delete)
 
 const report = (state: RepairReport['analysis_state']): RepairReport => ({
   id: 'repair_report:abc',
@@ -40,12 +41,14 @@ describe('repairReportsApi endpoints', () => {
   it('calls the exact backend routes with encoded identifiers', async () => {
     getMock.mockResolvedValue({ data: null })
     postMock.mockResolvedValue({ data: null })
+    deleteMock.mockResolvedValue({ data: null })
     await repairReportsApi.list()
     await repairReportsApi.get('repair_report:abc')
     await repairReportsApi.preview('repair_report:abc')
     await repairReportsApi.startAnalysis()
     await repairReportsApi.startSingleReportAnalysis('repair_report:abc')
     await repairReportsApi.getActions('repair_report:abc')
+    await repairReportsApi.deleteReport('repair_report:abc')
     await repairReportsApi.listRuns()
 
     expect(getMock.mock.calls.map((call) => call[0])).toEqual([
@@ -58,6 +61,9 @@ describe('repairReportsApi endpoints', () => {
     expect(postMock.mock.calls.map((call) => call[0])).toEqual([
       '/repair-reports/analyze',
       '/repair-reports/repair_report%3Aabc/analyze',
+    ])
+    expect(deleteMock.mock.calls.map((call) => call[0])).toEqual([
+      '/repair-reports/repair_report%3Aabc',
     ])
   })
 

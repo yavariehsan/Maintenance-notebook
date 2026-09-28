@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useQueryClient } from '@tanstack/react-query'
 import { QUERY_KEYS } from '@/lib/api/query-client'
@@ -10,11 +10,22 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { EmptyState } from '@/components/common/EmptyState'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
-import { AlertCircle, ArrowLeft, FileSpreadsheet, RefreshCw } from 'lucide-react'
+import { AlertCircle, ArrowLeft, FileSpreadsheet, RefreshCw, Trash2 } from 'lucide-react'
 import {
+  useDeleteRepairReport,
   useRepairReport,
   useRepairReportActions,
   useRepairReportPreview,
@@ -86,6 +97,8 @@ export function RepairReportDetailScreen({ reportId }: { reportId: string }) {
     refetch: refetchPreview,
   } = useRepairReportPreview(reportId)
   const analyzeMutation = useStartSingleReportAnalysis(reportId)
+  const deleteMutation = useDeleteRepairReport()
+  const [confirmDelete, setConfirmDelete] = useState(false)
   const {
     data: actions,
     isLoading: actionsLoading,
@@ -258,7 +271,12 @@ export function RepairReportDetailScreen({ reportId }: { reportId: string }) {
                     key={action.id ?? action.action_text}
                     className="text-sm leading-6"
                   >
-                    {action.action_text || '—'}
+                    {action.guide_instruction || action.action_text || '—'}
+                    {action.guide_instruction && action.action_text && (
+                      <span className="block text-xs text-muted-foreground">
+                        {t('troubleshootingGuide.basedOnLabel', { text: action.action_text })}
+                      </span>
+                    )}
                     <span className="flex flex-wrap gap-1.5 mt-1">
                       {action.role && (
                         <Badge variant="secondary" className="font-mono text-[11px]">
@@ -465,6 +483,17 @@ export function RepairReportDetailScreen({ reportId }: { reportId: string }) {
           <Badge variant="secondary" className="font-mono text-[11px]">
             {t(statusLabelKey(report.analysis_state))}
           </Badge>
+          {(report.analysis_state !== 'queued' && report.analysis_state !== 'processing') && (
+            <Button
+              variant="ghost"
+              size="sm"
+              aria-label={t('repairReports.deleteReport')}
+              disabled={deleteMutation.isPending}
+              onClick={() => setConfirmDelete(true)}
+            >
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          )}
         </div>
         <Tabs defaultValue="content" className="w-full">
           <TabsList className="w-full sticky top-0 z-10 bg-card">
@@ -497,6 +526,36 @@ export function RepairReportDetailScreen({ reportId }: { reportId: string }) {
           {renderBody()}
         </div>
       </div>
+      <AlertDialog open={confirmDelete} onOpenChange={setConfirmDelete}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t('repairReports.deleteReportTitle')}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t('repairReports.deleteReportDescription')}
+              {report && (
+                <span className="mt-2 block font-mono text-xs">
+                  {report.filename}
+                </span>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleteMutation.isPending}>
+              {t('common.cancel')}
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={deleteMutation.isPending}
+              onClick={() => {
+                deleteMutation.mutate(reportId, {
+                  onSuccess: () => router.push('/repair-reports'),
+                })
+              }}
+            >
+              {t('repairReports.deleteReport')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </AppShell>
   )
 }

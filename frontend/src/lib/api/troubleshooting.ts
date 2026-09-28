@@ -48,6 +48,7 @@ export interface TroubleshootingCauseAction {
   action_text: string | null
   source_record_ids: string[]
   frequency: number | null
+  guide_instruction: string | null
 }
 
 export interface TroubleshootingCauseEvidence {

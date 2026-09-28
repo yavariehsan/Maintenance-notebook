@@ -113,6 +113,9 @@ class ReportActionItem(BaseModel):
         default_factory=list, description="This report's supporting record IDs"
     )
     frequency: Optional[int] = Field(None, description="Supporting record count")
+    guide_instruction: Optional[str] = Field(
+        None, description="Guide-facing synthesized instruction, when approved"
+    )
 
 
 class ReportVerificationItem(BaseModel):
@@ -211,6 +214,37 @@ async def list_analysis_runs(limit: int = Query(20, ge=1, le=100)):
     except Exception as e:
         logger.error(f"Error listing analysis runs: {e}")
         raise HTTPException(status_code=500, detail="Error listing analysis runs")
+
+
+class DeleteReportResult(BaseModel):
+    """Acknowledgement for a repair-report deletion (record + file)."""
+
+    id: str = Field(..., description="Deleted report identifier")
+    deleted: bool = Field(..., description="Always true on success")
+
+
+@router.delete("/repair-reports/{report_id}", response_model=DeleteReportResult)
+async def delete_repair_report(report_id: str):
+    """Delete one uploaded repair report by its stable record ID.
+
+    Removes the report record and its stored workbook; run history,
+    task rows, and the knowledge database are preserved. 404 for
+    unknown reports, 409 while the report is being analyzed.
+    """
+    try:
+        result = await reports.delete_report(report_id)
+    except reports.AnalysisInProgressError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except NotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except InvalidInputError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error deleting repair report: {e}")
+        raise HTTPException(
+            status_code=500, detail="Error deleting repair report"
+        )
+    return DeleteReportResult(**result)
 
 
 @router.get("/repair-reports/runs/{run_id}", response_model=AnalysisRunItem)

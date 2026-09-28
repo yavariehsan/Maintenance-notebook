@@ -282,11 +282,16 @@ def test_test_tahvil_produces_verification_and_event() -> None:
     assert context.post_repair_events[0].event_type is HandoverEventType.HANDOVER
 
 
-def test_standalone_test_kept_as_history_only() -> None:
-    """M11C D4 (open Q4): standalone `تست شد` yields no objects."""
+def test_standalone_test_emits_verification_only() -> None:
+    """M11C-6R2 final: standalone `تست شد` → history + Verification, no action."""
     context = _miner_run([{"id": "R-1", "repair": "تست شد"}])
     assert context.repair_actions == []
-    assert context.technical_verifications == []
+    assert len(context.technical_verifications) == 1
+    verification = context.technical_verifications[0]
+    assert verification.event_type is VerificationEventType.TEST
+    assert verification.record_id == "R-1"
+    assert verification.sentence == "تست شد"
+    assert verification.repair_action_id is None
     assert context.post_repair_events == []
 
 
@@ -420,6 +425,40 @@ def test_guide_bundle_traceability() -> None:
     # No closure-only action and no invented replacement text.
     assert [action.action_text for action in context.repair_actions] == [sentence]
     assert "تعویض سوئیچ" not in {action.action_text for action in context.repair_actions}
+
+
+def test_switch_adjustment_guide_synthesis() -> None:
+    """M11C-6R2 Part B: approved source yields the exact guide instruction."""
+    sentence = "تعویض پالت انجام نمیشد که سوئیچ تنظیم و تست و تحویل گردید"
+    context = _miner_run([{"id": "R-7", "repair": sentence}])
+    action = context.repair_actions[0]
+    assert action.guide_instruction == (
+        "در صورت عدم تعویض پالت، سوئیچ بررسی و در صورت لزوم تنظیم گردد."
+    )
+    # Original text untouched; instruction linked to the same action/record.
+    assert action.action_text == sentence
+    assert action.source_record_ids == ["R-7"]
+    verification = context.technical_verifications[0]
+    event = context.post_repair_events[0]
+    assert verification.repair_action_id == action.action_id
+    assert event.repair_action_id == action.action_id
+
+
+def test_guide_synthesis_only_for_approved_shape() -> None:
+    """M11C-6R2 Part B: no instruction outside the narrow approved shape."""
+    # Affirmed replacement (no negation) → no instruction.
+    affirmed = _miner_run([{"id": "R-1", "repair": "پمپ تعویض شد و مشکل برطرف شد"}])
+    assert affirmed.repair_actions
+    assert all(action.guide_instruction is None for action in affirmed.repair_actions)
+    # No adjustment present → no instruction.
+    no_adjust = _miner_run([{"id": "R-1", "repair": "پمپ تعویض نشد و دستگاه تست و تحویل شد"}])
+    assert all(action.guide_instruction is None for action in no_adjust.repair_actions)
+    # No test/handover context → no instruction.
+    no_test = _miner_run([{"id": "R-1", "repair": "تعویض پالت انجام نمیشد که سوئیچ تنظیم شد"}])
+    assert all(action.guide_instruction is None for action in no_test.repair_actions)
+    # Non-replace primary (observed issue) → no instruction, nothing invented.
+    observed = _miner_run([{"id": "R-1", "repair": "بعلت فورس بودن قطعه"}])
+    assert all(action.guide_instruction is None for action in observed.repair_actions)
 
 
 def _clustered(modes: list[tuple[str, str]]) -> dict[str, str]:

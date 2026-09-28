@@ -4,7 +4,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import { repairReportsApi } from '@/lib/api/repair-reports'
-import { useStartRepairAnalysis, useStartSingleReportAnalysis } from './use-repair-reports'
+import {
+  useDeleteRepairReport,
+  useStartRepairAnalysis,
+  useStartSingleReportAnalysis,
+} from './use-repair-reports'
 
 vi.mock('@/lib/api/repair-reports', () => ({
   repairReportsApi: {
@@ -15,6 +19,7 @@ vi.mock('@/lib/api/repair-reports', () => ({
     startAnalysis: vi.fn(),
     startSingleReportAnalysis: vi.fn(),
     getActions: vi.fn(),
+    deleteReport: vi.fn(),
     listRuns: vi.fn(),
   },
   isActiveRepairReport: vi.fn(
@@ -33,10 +38,11 @@ function makeClient() {
     },
   })
   const spy = vi.spyOn(client, 'invalidateQueries')
+  const removeSpy = vi.spyOn(client, 'removeQueries')
   function Wrapper({ children }: { children: React.ReactNode }) {
     return <QueryClientProvider client={client}>{children}</QueryClientProvider>
   }
-  return { Wrapper, spy }
+  return { Wrapper, spy, removeSpy }
 }
 
 describe('useStartRepairAnalysis cache sync', () => {
@@ -109,5 +115,22 @@ describe('useStartRepairAnalysis cache sync', () => {
     expect(api.startSingleReportAnalysis).toHaveBeenCalledWith('repair_report:abc')
     expect(spy).toHaveBeenCalledWith({ queryKey: ['repair-reports', 'repair_report:abc'] })
     expect(spy).toHaveBeenCalledWith({ queryKey: ['tasks'] })
+  })
+
+  it('deletes by stable ID and drops the report caches', async () => {
+    api.deleteReport.mockResolvedValue({ id: 'repair_report:abc', deleted: true })
+    const { Wrapper, spy, removeSpy } = makeClient()
+    const { result } = renderHook(() => useDeleteRepairReport(), {
+      wrapper: Wrapper,
+    })
+    result.current.mutate('repair_report:abc')
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBe(true)
+    })
+    expect(api.deleteReport).toHaveBeenCalledWith('repair_report:abc')
+    expect(spy).toHaveBeenCalledWith({ queryKey: ['repair-reports'] })
+    expect(removeSpy).toHaveBeenCalledWith({
+      queryKey: ['repair-reports', 'repair_report:abc'],
+    })
   })
 })

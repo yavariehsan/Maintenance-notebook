@@ -147,3 +147,30 @@ export function useStartSingleReportAnalysis(reportId: string) {
     },
   })
 }
+
+export function useDeleteRepairReport() {
+  const queryClient = useQueryClient()
+  const { toast } = useToast()
+  const { t } = useTranslation()
+
+  return useMutation({
+    mutationFn: (reportId: string) => repairReportsApi.deleteReport(reportId),
+    onSuccess: (_result, reportId) => {
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.repairReports })
+      queryClient.removeQueries({ queryKey: QUERY_KEYS.repairReport(reportId) })
+      queryClient.removeQueries({ queryKey: QUERY_KEYS.repairReportPreview(reportId) })
+      queryClient.removeQueries({ queryKey: QUERY_KEYS.repairReportActions(reportId) })
+      toast({
+        title: t('common.success'),
+        description: t('repairReports.deleteSuccess'),
+      })
+    },
+    onError: (error: unknown) => {
+      toast({
+        title: t('common.error'),
+        description: t(getApiErrorKey(error, t('repairReports.deleteFailed'))),
+        variant: 'destructive',
+      })
+    },
+  })
+}

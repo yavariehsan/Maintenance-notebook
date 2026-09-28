@@ -1184,3 +1184,113 @@ async def test_report_actions_unknown_report_is_404(client):
         mock_repo.side_effect = _repo
         resp = client.get("/api/repair-reports/repair_report:missing/actions")
     assert resp.status_code == 404
+
+
+# --- report deletion (M11C-6R2 Part C) ------------------------------------------
+
+
+def _delete_report_row(**overrides):
+    row = _report_row(**overrides)
+    return row
+
+
+@pytest.mark.asyncio
+async def test_delete_report_removes_record_and_file(tmp_path, monkeypatch, client):
+    """DELETE removes the record + stored file by stable ID (not filename)."""
+    monkeypatch.setattr(reports, "REPAIR_REPORTS_FOLDER", str(tmp_path))
+    stored = tmp_path / "cmms.xlsx"
+    stored.write_bytes(b"fake-workbook")
+    deleted_ids = []
+
+    async def _repo(query, params=None):
+        if "FROM repair_analysis_run" in query:
+            return []
+        if "FROM repair_report WHERE" in query:
+            return [
+                _delete_report_row(
+                    id="repair_report:abc123",
+                    stored_filename="cmms.xlsx",
+                    analysis_state="not_analyzed",
+                )
+            ]
+        raise AssertionError(f"unexpected query: {query}")
+
+    async def _fake_delete(record_id):
+        deleted_ids.append(str(record_id))
+        return None
+
+    with (
+        patch.object(reports, "repo_query", new_callable=AsyncMock) as mock_repo,
+        patch(
+            "open_notebook.database.repository.repo_delete",
+            new=_fake_delete,
+        ),
+    ):
+        mock_repo.side_effect = _repo
+        resp = client.delete("/api/repair-reports/repair_report:abc123")
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"id": "repair_report:abc123", "deleted": True}
+    assert deleted_ids == ["repair_report:abc123"]
+    assert not stored.exists()
+
+
+@pytest.mark.asyncio
+async def test_delete_report_unknown_is_404(client):
+    async def _repo(query, params=None):
+        if "FROM repair_report WHERE" in query:
+            return []
+        raise AssertionError(f"unexpected query: {query}")
+
+    with patch.object(reports, "repo_query", new_callable=AsyncMock) as mock_repo:
+        mock_repo.side_effect = _repo
+        resp = client.delete("/api/repair-reports/repair_report:missing")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_delete_active_report_conflicts(client):
+    """A queued/processing report cannot be deleted (409)."""
+    async def _repo(query, params=None):
+        if "FROM repair_analysis_run" in query:
+            return []
+        if "FROM repair_report WHERE" in query:
+            return [_delete_report_row(analysis_state="processing")]
+        raise AssertionError(f"unexpected query: {query}")
+
+    with patch.object(reports, "repo_query", new_callable=AsyncMock) as mock_repo:
+        mock_repo.side_effect = _repo
+        resp = client.delete("/api/repair-reports/repair_report:abc123")
+    assert resp.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_delete_report_in_active_run_conflicts(client):
+    """A report snapshotted by the live run cannot be deleted (409)."""
+    live = _run_row(
+        status="processing",
+        command_id="command:live",
+        report_ids=["repair_report:abc123"],
+        created=_iso_now_minus(1),
+        started_at=_iso_now_minus(1),
+    )
+
+    async def _repo(query, params=None):
+        if "FROM repair_analysis_run" in query:
+            return [live]
+        if "FROM command" in query:
+            return [
+                {
+                    "status": "running",
+                    "updated_at": _iso_now_minus(1),
+                    "analysis_heartbeat": _iso_now_minus(1),
+                }
+            ]
+        if "FROM repair_report WHERE" in query:
+            # State not yet flipped, but the live run already snapshots it.
+            return [_delete_report_row(analysis_state="not_analyzed")]
+        raise AssertionError(f"unexpected query: {query}")
+
+    with patch.object(reports, "repo_query", new_callable=AsyncMock) as mock_repo:
+        mock_repo.side_effect = _repo
+        resp = client.delete("/api/repair-reports/repair_report:abc123")
+    assert resp.status_code == 409

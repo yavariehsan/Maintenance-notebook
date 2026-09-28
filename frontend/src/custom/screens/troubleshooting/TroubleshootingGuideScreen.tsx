@@ -24,6 +24,10 @@ import {
   useTroubleshootingGuide,
   useTroubleshootingStatus,
 } from '@/lib/hooks/use-troubleshooting'
+import {
+  useRepairAnalysisRuns,
+  useRepairReports,
+} from '@/lib/hooks/use-repair-reports'
 import { isTroubleshootingAvailable } from '@/lib/api/troubleshooting'
 import type {
   TroubleshootingCause,
@@ -58,6 +62,7 @@ export function TroubleshootingGuideScreen() {
   const { t } = useTranslation()
   const [selectedCode, setSelectedCode] = useState<string>('')
   const [selectedModeId, setSelectedModeId] = useState<string>('')
+  const [selectedSourceId, setSelectedSourceId] = useState<string>('')
 
   const {
     data: status,
@@ -88,6 +93,47 @@ export function TroubleshootingGuideScreen() {
     available ? selectedCode || null : null,
     available ? selectedModeId || null : null,
   )
+
+  /**
+   * Source-report chain (M11C-6R2 Part D): which uploaded repair report(s)
+   * the current knowledge database was generated from. Report identity is
+   * always the stable record ID — never the filename alone — so duplicate
+   * filenames stay distinguishable and deleted sources can never silently
+   * remap to another same-named file.
+   */
+  const { data: sourceReports } = useRepairReports()
+  const { data: analysisRuns } = useRepairAnalysisRuns()
+
+  const latestCompletedRun = useMemo(() => {
+    const completed = (analysisRuns ?? []).filter((run) => run.status === 'completed')
+    return (
+      [...completed].sort((a, b) => (b.created ?? '').localeCompare(a.created ?? ''))[0] ??
+      null
+    )
+  }, [analysisRuns])
+  const backingReportIds = useMemo(
+    () => latestCompletedRun?.report_ids ?? [],
+    [latestCompletedRun],
+  )
+  const backingReports = useMemo(
+    () => (sourceReports ?? []).filter((report) => backingReportIds.includes(report.id)),
+    [sourceReports, backingReportIds],
+  )
+  const deletedBackingIds = useMemo(
+    () =>
+      backingReportIds.filter(
+        (id) => !(sourceReports ?? []).some((report) => report.id === id),
+      ),
+    [sourceReports, backingReportIds],
+  )
+  // A selected source gates guide browsing only with positive run
+  // evidence: when the database's backing run is known and the selection
+  // is not in it, guides are hidden (mismatch) instead of showing
+  // another source's knowledge.
+  const sourceMismatch =
+    latestCompletedRun !== null &&
+    selectedSourceId !== '' &&
+    !backingReportIds.includes(selectedSourceId)
 
   const handleSelectCode = (code: string) => {
     setSelectedCode(code)
@@ -191,6 +237,68 @@ export function TroubleshootingGuideScreen() {
     </Card>
   )
 
+  /**
+   * Source-report selector (M11C-6R2 Part D): the uploaded repair
+   * report(s) backing the current knowledge database. Options carry the
+   * stable record ID as the value and enough human context (filename,
+   * rows, upload time, short ID) to tell duplicate filenames apart.
+   * Deleted backing sources render a warning and are never remapped to
+   * another same-named file.
+   */
+  const renderSourceSelector = () => {
+    if (!sourceReports || sourceReports.length === 0) {
+      return (
+        <EmptyState
+          icon={LifeBuoy}
+          title={t('troubleshootingGuide.noSourcesTitle')}
+          description={t('troubleshootingGuide.noSourcesDescription')}
+        />
+      )
+    }
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">{t('troubleshootingGuide.selectSourceTitle')}</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          <Label htmlFor="troubleshooting-source">{t('troubleshootingGuide.sourceLabel')}</Label>
+          <Select
+            value={selectedSourceId}
+            onValueChange={(id) => {
+              setSelectedSourceId(id)
+              setSelectedCode('')
+              setSelectedModeId('')
+            }}
+          >
+            <SelectTrigger id="troubleshooting-source" className="w-full">
+              <SelectValue placeholder={t('troubleshootingGuide.sourcePlaceholder')} />
+            </SelectTrigger>
+            <SelectContent>
+              {sourceReports.map((report) => (
+                <SelectItem key={report.id} value={report.id}>
+                  {report.filename} · {report.data_rows ?? '—'} · {report.created ?? ''} · {report.id.slice(-6)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {backingReports.length > 0 && (
+            <p className="text-xs text-muted-foreground">
+              {t('troubleshootingGuide.sourceBacksDb', {
+                filename: backingReports.map((report) => report.filename).join(', '),
+              })}
+            </p>
+          )}
+          {deletedBackingIds.length > 0 && (
+            <Alert>
+              <AlertTriangle className="h-4 w-4" />
+              <AlertDescription>{t('troubleshootingGuide.sourceDeletedWarning')}</AlertDescription>
+            </Alert>
+          )}
+        </CardContent>
+      </Card>
+    )
+  }
+
   const renderGuide = () => {
     if (!selectedModeId) return null
     if (guideLoading) {
@@ -272,7 +380,12 @@ export function TroubleshootingGuideScreen() {
                     key={action.id ?? action.action_text}
                     className="text-sm leading-6"
                   >
-                    {action.action_text || '—'}
+                    {action.guide_instruction ?? action.action_text ?? '—'}
+                    {action.guide_instruction && action.action_text && (
+                      <span className="block text-xs text-muted-foreground">
+                        {t('troubleshootingGuide.basedOnLabel', { text: action.action_text })}
+                      </span>
+                    )}
                     <span className="flex flex-wrap gap-1.5 mt-1">
                       {action.role && (
                         <Badge variant="secondary" className="font-mono text-[11px]">
@@ -396,6 +509,15 @@ export function TroubleshootingGuideScreen() {
 
     return (
       <div className="space-y-6">
+        {renderSourceSelector()}
+        {sourceMismatch ? (
+          <EmptyState
+            icon={LifeBuoy}
+            title={t('troubleshootingGuide.sourceMismatchTitle')}
+            description={t('troubleshootingGuide.sourceMismatchDescription')}
+          />
+        ) : (
+          <>
         <Card>
           <CardHeader>
             <CardTitle className="text-base">{t('troubleshootingGuide.selectEquipmentTitle')}</CardTitle>
@@ -465,6 +587,8 @@ export function TroubleshootingGuideScreen() {
             </CardHeader>
             <CardContent>{renderGuide()}</CardContent>
           </Card>
+        )}
+          </>
         )}
       </div>
     )

@@ -11,11 +11,13 @@ Admission (M11C D1): sentences shorter than
 confidently name a known component/parameter (own-equipment tree tokens,
 official aliases, or manufacturer-scoped induced terms, token-aware).
 
-History/verification semantics (M11C D2/D4/D5): a closed set of
+History/verification semantics (M11C D2/D4/D5, M11C-6R2 final): a closed set of
 standalone closure phrases yields no RepairAction (history is kept on
-the record); the canonical test-and-handover sentence and mixed
-technical+test/outcome sentences additionally yield TechnicalVerification
-and PostRepairEvent objects pointing at the same source sentence.
+the record); the canonical test-and-handover sentence yields a
+TechnicalVerification plus a handover PostRepairEvent, bare ``تست شد``
+yields a TechnicalVerification, and mixed technical+test/outcome
+sentences additionally yield TechnicalVerification and PostRepairEvent
+objects pointing at the same source sentence.
 Matching is token-aware: keywords must occur as whole tokens (ASCII-only
 inflections ed/d/s/es/ing allowed), so ``قطعه`` never matches ``قطع``.
 """
@@ -35,6 +37,9 @@ from maintenance_troubleshooting.domain.repairs import (
     VerificationEventType,
 )
 from maintenance_troubleshooting.stages.base import PipelineContext
+from maintenance_troubleshooting.stages.guide_instructions import (
+    synthesize_guide_instruction,
+)
 from maintenance_troubleshooting.text import SimpleTokenizer, TextNormalizer
 
 _SENTENCE_SPLIT = re.compile(r"[\n]+|[.!?؟;]+")
@@ -76,10 +81,11 @@ _MATCH_TOKENIZER = SimpleTokenizer()
 _ASCII_INFLECTIONS = ("ing", "es", "ed", "d", "s")
 
 #: Standalone closure/handover/outcome phrases (canonical spellings; matched
-#: by normalized equality). Expert-approved HISTORY_ONLY set (M11C D2/D5):
-#: these yield no RepairAction. ``تست و تحویل شد`` additionally yields a
-#: TechnicalVerification; the rest yield a PostRepairEvent, except bare
-#: ``تست شد`` whose standalone semantics are still an open question.
+#: by normalized equality). Expert-approved HISTORY_ONLY set (M11C D2/D5,
+#: final M11C-6R2 decision): these yield no RepairAction. ``تست و تحویل شد``
+#: yields a TechnicalVerification plus a handover PostRepairEvent; bare
+#: ``تست شد`` yields a TechnicalVerification (test); the rest yield a
+#: PostRepairEvent by family. History is always kept on the record itself.
 _HISTORY_ONLY_PHRASES = (
     "تحویل شد",
     "تحویل گردید",
@@ -93,8 +99,8 @@ _HISTORY_ONLY_PHRASES = (
 #: Exact test-and-handover sentence (normalized form).
 _TEST_HANDOVER_PHRASE = "تست و تحویل شد"
 
-#: Standalone `تست شد`: expert question Q4 is still open, so it yields no
-#: verification/event objects — the record itself is kept as history.
+#: Standalone `تست شد` (M11C-6R2 final): retained in history and emitted
+#: as a TechnicalVerification (test) — never a recommended RepairAction.
 _TEST_ONLY_PHRASE = "تست شد"
 
 #: Substrings marking test+handover / outcome inside longer sentences.
@@ -304,6 +310,10 @@ class RepairActionMiner:
         roles: dict[tuple[str, str, str], list[ActionRole]] = {}
         categories: dict[tuple[str, str, str], ActionCategory] = {}
         secondaries: dict[tuple[str, str, str], list[ActionCategory]] = {}
+        # Guide-facing synthesized instruction per sentence key (M11C-6R2
+        # Part B): set once from the exemplar sentence; None when the
+        # narrow approved shape does not hold.
+        instructions: dict[tuple[str, str, str], str | None] = {}
         verifications: list[TechnicalVerification] = []
         events: list[PostRepairEvent] = []
         verification_counters: dict[tuple[str, str], int] = {}
@@ -359,6 +369,17 @@ class RepairActionMiner:
                 roles.setdefault(key, []).append(role)
                 categories.setdefault(key, category)
                 secondaries.setdefault(key, matched[1:])
+                if key not in instructions:
+                    # M11C-6R2 Part B: guide-facing instruction for the
+                    # approved narrow shape only; anything else is None.
+                    instructions[key] = synthesize_guide_instruction(
+                        sentence,
+                        _tokens(sentence.lower()),
+                        primary_is_replace=(
+                            category is ActionCategory.REPLACE
+                        ),
+                        has_adjust=(ActionCategory.ADJUST in matched),
+                    )
                 if (key, record_id) not in seen_mixed:
                     seen_mixed.add((key, record_id))
                     self._mark_mixed_semantics(
@@ -396,6 +417,7 @@ class RepairActionMiner:
                     equipment_code=equipment_code,
                     failure_mode_id=mode_id,
                     secondary_categories=secondaries.get(key, []),
+                    guide_instruction=instructions.get(key),
                 )
             )
         for kind, event_type, key, record_id, original in pending_links:
@@ -454,12 +476,27 @@ class RepairActionMiner:
         """Standalone closure phrasing: history objects only, no RepairAction.
 
         The canonical test-and-handover sentence yields a verification and
-        a handover event (M11C D4/D5); every other listed phrase yields a
-        handover/outcome event by family. Bare ``تست شد`` is deliberately
-        left without objects (open question Q4).
+        a handover event (M11C D4/D5); bare ``تست شد`` yields a test
+        verification (M11C-6R2 final — history + verification, never a
+        recommended action); every other listed phrase yields a
+        handover/outcome event by family.
         """
         equipment_code, mode_id, _ = key
         if sentence == test_only:
+            verification_counters[(equipment_code, mode_id)] = (
+                verification_counters.get((equipment_code, mode_id), 0) + 1
+            )
+            number = verification_counters[(equipment_code, mode_id)]
+            verifications.append(
+                TechnicalVerification(
+                    verification_id=f"ver-{equipment_code}-{mode_id}-{number:03d}",
+                    record_id=record_id,
+                    sentence=original,
+                    event_type=VerificationEventType.TEST,
+                    equipment_code=equipment_code,
+                    failure_mode_id=mode_id,
+                )
+            )
             return
         if sentence == test_handover:
             verification_counters[(equipment_code, mode_id)] = (
