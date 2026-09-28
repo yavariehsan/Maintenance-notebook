@@ -109,3 +109,14 @@ Real-data refinements (each justified by measured false merges/splits):
   may still join any cluster).
 - Cause/action grouping is case-folded (`Axis Control System` ≡
   `Axis control system`); labels keep the most frequent raw variant.
+- Action keyword matching is token-aware: keywords must occur as whole
+  tokens (ASCII-only inflections `ed/d/s/es/ing` accepted; a single
+  leading `و` conjunction is stripped), so `قطعه` never matches `قطع`;
+  ZWNJ splits tokens, making `می‌شود` ≡ `می شود` at match time without
+  rewriting stored text.
+- Repair sentences shorter than `min_repair_length` (10) are rejected
+  unless they name a known component/parameter (own-equipment tree,
+  official aliases, or manufacturer-scoped induced terms, token-aware).
+- Standalone closure phrasing yields history objects, never recommended
+  actions; test-and-handover yields verification + handover event
+  objects; all point at the verbatim source sentence.

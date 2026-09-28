@@ -39,7 +39,11 @@ from maintenance_troubleshooting.domain.records import MaintenanceRecord
 from maintenance_troubleshooting.domain.repairs import (
     ActionCategory,
     ActionRole,
+    HandoverEventType,
+    PostRepairEvent,
     RepairAction,
+    TechnicalVerification,
+    VerificationEventType,
 )
 from maintenance_troubleshooting.domain.run import AnalysisRun
 
@@ -59,9 +63,11 @@ __all__ = [
     "FailureMechanism",
     "FailureMode",
     "FailureProvenance",
+    "HandoverEventType",
     "MaintenanceRecord",
     "NormalizedRecord",
     "OccurrenceRate",
+    "PostRepairEvent",
     "ProbabilityMethod",
     "RecommendedAction",
     "RelevanceBasis",
@@ -69,7 +75,9 @@ __all__ = [
     "RepairEvidence",
     "SupportBreakdown",
     "TechnicalTree",
+    "TechnicalVerification",
     "TroubleshootingCause",
     "TroubleshootingGuide",
+    "VerificationEventType",
     "normalize_probabilities",
 ]

@@ -3,7 +3,12 @@
 from maintenance_troubleshooting.domain import MaintenanceRecord, TechnicalTree
 from maintenance_troubleshooting.domain.evidence import RelevanceBasis, RepairEvidence
 from maintenance_troubleshooting.domain.normalized import NormalizedRecord
-from maintenance_troubleshooting.domain.repairs import ActionCategory, ActionRole
+from maintenance_troubleshooting.domain.repairs import (
+    ActionCategory,
+    ActionRole,
+    HandoverEventType,
+    VerificationEventType,
+)
 from maintenance_troubleshooting.similarity import (
     TechnicalSimilarityCategory as Cat,
 )
@@ -16,6 +21,7 @@ from maintenance_troubleshooting.stages.normalization import Normalizer
 from maintenance_troubleshooting.stages.repairs import (
     RepairActionMiner,
     classify_sentence,
+    match_categories,
     split_sentences,
 )
 
@@ -127,6 +133,234 @@ def test_location_and_process_never_drive_similarity() -> None:
     # Location/process trees are not even inputs to classification.
     assert classify_technical_similarity(workshop, compressor) is Cat.UNRELATED
     assert classify_technical_similarity(workshop, workshop) is Cat.SAME_EQUIPMENT_TYPE
+
+
+# ---------------------------------------------------------------------------
+# M11C-6 repair-semantics regression tests.
+#
+# Conventions: synthetic Persian fixtures only (no customer data); each
+# test names the approved decision it guards. Miner contexts are built by
+# hand like test_action_taxonomy_and_roles so the admission gate,
+# vocabulary induction, and HISTORY_ONLY paths are exercised directly.
+# ---------------------------------------------------------------------------
+
+from maintenance_troubleshooting.domain.equipment import Equipment  # noqa: E402
+
+
+def _miner_run(entries: list[dict]) -> PipelineContext:
+    """Run RepairActionMiner over synthetic record entries.
+
+    Entry keys: id, repair, equipment (default QX-1), tree (default
+    empty TechnicalTree), manufacturer (default None), symptom.
+    """
+    context = PipelineContext()
+    records = []
+    for entry in entries:
+        tree = entry.get("tree") or TechnicalTree()
+        code = entry.get("equipment", "QX-1")
+        records.append(
+            MaintenanceRecord(
+                record_id=entry["id"],
+                equipment_code=code,
+                request_description=entry.get("symptom", "s"),
+                repair_description=entry.get("repair"),
+                technical_tree=tree,
+            )
+        )
+        if code not in context.equipment:
+            context.equipment[code] = Equipment(
+                equipment_code=code,
+                manufacturer=entry.get("manufacturer"),
+                technical_tree=tree,
+            )
+    context.records = records
+    context.valid_records = records
+    context.evidence = [
+        RepairEvidence(
+            evidence_id=f"ev-{record.record_id}",
+            record_id=record.record_id,
+            equipment_code=record.equipment_code,
+            relevance_basis=RelevanceBasis.EXACT_EQUIPMENT,
+            scope_equipment=record.equipment_code,
+            scope_failure_mode="FM-1",
+            weight=1.0,
+        )
+        for record in records
+    ]
+    return RepairActionMiner().run(context)
+
+
+def test_short_fragment_rejected() -> None:
+    """M11C D1: `6 شد` is rejected as repair/action text."""
+    context = _miner_run([{"id": "R-1", "repair": "6 شد"}])
+    assert context.repair_actions == []
+    assert context.technical_verifications == []
+    assert context.post_repair_events == []
+
+
+def test_short_component_admitted_with_tree() -> None:
+    """M11C D1: short text naming a tree component is admitted."""
+    admitted = _miner_run(
+        [
+            {
+                "id": "R-1",
+                "repair": "تعمیر پمپ",
+                "tree": TechnicalTree(t3="پمپ هیدرولیک"),
+            }
+        ]
+    )
+    assert [action.action_text for action in admitted.repair_actions] == ["تعمیر پمپ"]
+    dropped = _miner_run([{"id": "R-1", "repair": "تعمیر پمپ"}])
+    assert dropped.repair_actions == []
+
+
+def test_short_arbitrary_phrase_rejected() -> None:
+    """M11C D1: short text without attributable vocabulary is rejected."""
+    context = _miner_run([{"id": "R-1", "repair": "abc"}])
+    assert context.repair_actions == []
+
+
+def test_long_useful_action_passes() -> None:
+    """M11C D1: existing useful actions >=10 characters continue to pass."""
+    context = _miner_run([{"id": "R-1", "repair": "منبع تغذیه تعویض شد"}])
+    assert len(context.repair_actions) == 1
+    assert context.repair_actions[0].category is ActionCategory.REPLACE
+
+
+def test_tahvil_shod_history_only() -> None:
+    """M11C D2/D5: `تحویل شد` stays history, never a recommended action."""
+    context = _miner_run([{"id": "R-1", "repair": "تحویل شد"}])
+    assert context.repair_actions == []
+    assert len(context.post_repair_events) == 1
+    event = context.post_repair_events[0]
+    assert event.event_type is HandoverEventType.HANDOVER
+    assert event.record_id == "R-1"
+    assert event.sentence == "تحویل شد"
+
+
+def test_tahvil_gardid_history_only() -> None:
+    """M11C D2/D5: `تحویل گردید` stays history, never a recommended action."""
+    context = _miner_run([{"id": "R-1", "repair": "تحویل گردید"}])
+    assert context.repair_actions == []
+    assert len(context.post_repair_events) == 1
+    assert context.post_repair_events[0].event_type is HandoverEventType.HANDOVER
+
+
+def test_tahvil_gerefte_history_only() -> None:
+    """M11C D2: genuine logistics phrasing is still not a RepairAction."""
+    context = _miner_run([{"id": "R-1", "repair": "تحویل گرفته شد"}])
+    assert context.repair_actions == []
+    assert len(context.post_repair_events) == 1
+
+
+def test_moshkel_raf_shod_history_only() -> None:
+    """M11C D2/D5: `مشکل رفع شد` is an outcome event, not an action."""
+    context = _miner_run([{"id": "R-1", "repair": "مشکل رفع شد"}])
+    assert context.repair_actions == []
+    assert len(context.post_repair_events) == 1
+    assert context.post_repair_events[0].event_type is HandoverEventType.OUTCOME
+
+
+def test_bartaraf_gardid_history_only() -> None:
+    """M11C D2/D5: `برطرف گردید` is an outcome event, not an action."""
+    context = _miner_run([{"id": "R-1", "repair": "برطرف گردید"}])
+    assert context.repair_actions == []
+    assert len(context.post_repair_events) == 1
+    assert context.post_repair_events[0].event_type is HandoverEventType.OUTCOME
+
+
+def test_test_tahvil_produces_verification_and_event() -> None:
+    """M11C D4/D5: `تست و تحویل شد` → Verification + handover, no action."""
+    context = _miner_run([{"id": "R-1", "repair": "تست و تحویل شد"}])
+    assert context.repair_actions == []
+    assert len(context.technical_verifications) == 1
+    verification = context.technical_verifications[0]
+    assert verification.event_type is VerificationEventType.TEST
+    assert verification.record_id == "R-1"
+    assert verification.sentence == "تست و تحویل شد"
+    assert len(context.post_repair_events) == 1
+    assert context.post_repair_events[0].event_type is HandoverEventType.HANDOVER
+
+
+def test_standalone_test_kept_as_history_only() -> None:
+    """M11C D4 (open Q4): standalone `تست شد` yields no objects."""
+    context = _miner_run([{"id": "R-1", "repair": "تست شد"}])
+    assert context.repair_actions == []
+    assert context.technical_verifications == []
+    assert context.post_repair_events == []
+
+
+def test_mixed_sentence_keeps_technical_action() -> None:
+    """M11C D3/D5: technical action retained; verification+event linked."""
+    sentence = "تعویض پالت انجام نمیشد که سوئیچ تنظیم و تست و تحویل گردید"
+    context = _miner_run([{"id": "R-1", "repair": sentence}])
+    assert [action.action_text for action in context.repair_actions] == [sentence]
+    action = context.repair_actions[0]
+    assert action.category is ActionCategory.REPLACE
+    assert ActionCategory.ADJUST in action.secondary_categories
+    assert ActionCategory.TEST in action.secondary_categories
+    assert len(context.technical_verifications) == 1
+    verification = context.technical_verifications[0]
+    assert verification.event_type is VerificationEventType.TEST
+    assert verification.repair_action_id == action.action_id
+    assert len(context.post_repair_events) == 1
+    event = context.post_repair_events[0]
+    assert event.event_type is HandoverEventType.HANDOVER
+    assert event.repair_action_id == action.action_id
+    # No invented switch replacement; the sentence itself is the action.
+    assert [action.action_text for action in context.repair_actions] == [sentence]
+    assert "تعویض سوئیچ" not in {action.action_text for action in context.repair_actions}
+
+
+def test_mixed_outcome_registers_verification() -> None:
+    """M11C D5 case B: technical action + outcome marker → verification."""
+    sentence = "پمپ تعویض شد و مشکل برطرف شد"
+    context = _miner_run([{"id": "R-1", "repair": sentence}])
+    assert len(context.repair_actions) == 1
+    assert context.repair_actions[0].category is ActionCategory.REPLACE
+    assert len(context.technical_verifications) == 1
+    assert context.technical_verifications[0].event_type is VerificationEventType.OUTCOME
+
+
+def test_qateh_does_not_trigger_disconnect() -> None:
+    """M11C D6: `قطعه` must not match `قطع`/disconnect (token-aware)."""
+    assert match_categories("بعلت فورس بودن قطعه") == []
+    assert classify_sentence("بعلت فورس بودن قطعه") is ActionCategory.OBSERVED_ISSUE
+    context = _miner_run([{"id": "R-1", "repair": "بعلت فورس بودن قطعه"}])
+    assert context.repair_actions[0].category is ActionCategory.OBSERVED_ISSUE
+
+
+def test_genuine_disconnect_still_matches() -> None:
+    """M11C D6: a real disconnect phrase keeps matching."""
+    assert match_categories("سیم برق قطع شد") == [ActionCategory.DISCONNECT]
+    context = _miner_run([{"id": "R-1", "repair": "سیم برق قطع شد"}])
+    assert context.repair_actions[0].category is ActionCategory.DISCONNECT
+
+
+def test_zwnj_spacing_equivalence() -> None:
+    """M11C D6: `می‌شود` and `می شود` match equivalently (shared contract)."""
+    from maintenance_troubleshooting.text import SimpleTokenizer
+
+    tokenizer = SimpleTokenizer()
+    assert tokenizer.tokenize("می‌شود") == tokenizer.tokenize("می شود") == ["می", "شود"]
+    assert classify_sentence("پمپ تست می‌شود") is ActionCategory.TEST
+    assert classify_sentence("پمپ تست می شود") is ActionCategory.TEST
+
+
+def test_guide_bundle_traceability() -> None:
+    """M11C §2: procedure bundle is traceable; nothing invented."""
+    sentence = "تعویض پالت انجام نمیشد که سوئیچ تنظیم و تست و تحویل گردید"
+    context = _miner_run([{"id": "R-7", "repair": sentence}])
+    action = context.repair_actions[0]
+    verification = context.technical_verifications[0]
+    event = context.post_repair_events[0]
+    # Every object points at the same historical sentence and record.
+    assert verification.record_id == event.record_id == action.source_record_ids[0] == "R-7"
+    assert verification.sentence == event.sentence == sentence
+    assert verification.repair_action_id == event.repair_action_id == action.action_id
+    # No closure-only action and no invented replacement text.
+    assert [action.action_text for action in context.repair_actions] == [sentence]
+    assert "تعویض سوئیچ" not in {action.action_text for action in context.repair_actions}
 
 
 def _clustered(modes: list[tuple[str, str]]) -> dict[str, str]:

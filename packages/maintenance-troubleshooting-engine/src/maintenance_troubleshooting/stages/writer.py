@@ -129,7 +129,28 @@ CREATE TABLE repair_actions (
     action_text TEXT NOT NULL,
     normalized_text TEXT NOT NULL,
     source_record_ids_json TEXT NOT NULL,
-    frequency INTEGER NOT NULL
+    frequency INTEGER NOT NULL,
+    secondary_categories_json TEXT NOT NULL DEFAULT '[]'
+);
+
+CREATE TABLE guide_verifications (
+    id TEXT PRIMARY KEY,
+    equipment_code TEXT NOT NULL REFERENCES equipment(code),
+    failure_mode_id TEXT NOT NULL REFERENCES failure_modes(id),
+    record_id TEXT NOT NULL REFERENCES maintenance_records(record_id),
+    sentence TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    repair_action_id TEXT
+);
+
+CREATE TABLE guide_post_repair_events (
+    id TEXT PRIMARY KEY,
+    equipment_code TEXT NOT NULL REFERENCES equipment(code),
+    failure_mode_id TEXT NOT NULL REFERENCES failure_modes(id),
+    record_id TEXT NOT NULL REFERENCES maintenance_records(record_id),
+    sentence TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    repair_action_id TEXT
 );
 
 CREATE TABLE cause_repair_actions (
@@ -257,6 +278,8 @@ class OutputDatabaseWriter:
             self._insert_modes(connection, context)
             self._insert_causes(connection, context)
             self._insert_actions(connection, context)
+            self._insert_verifications(connection, context)
+            self._insert_post_repair_events(connection, context)
             self._insert_evidence(connection, context)
             self._insert_sections(connection, context)
             self._insert_safety(connection, context)
@@ -436,20 +459,68 @@ class OutputDatabaseWriter:
                 action.normalized_text,
                 json.dumps(action.source_record_ids, ensure_ascii=False),
                 action.frequency,
+                json.dumps(
+                    [category.value for category in action.secondary_categories],
+                    ensure_ascii=False,
+                ),
             )
             for action in sorted(context.repair_actions, key=lambda a: a.action_id)
         ]
         connection.executemany(
             """INSERT INTO repair_actions (id, equipment_code, failure_mode_id,
                category, role, action_text, normalized_text,
-               source_record_ids_json, frequency)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
+               source_record_ids_json, frequency, secondary_categories_json)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
             rows,
         )
         links = sorted(set(context.cause_repair_links))
         connection.executemany(
             "INSERT INTO cause_repair_actions (cause_id, repair_action_id) VALUES (?, ?)",
             links,
+        )
+
+    def _insert_verifications(self, connection: sqlite3.Connection, context: PipelineContext) -> None:
+        rows = [
+            (
+                item.verification_id,
+                item.equipment_code,
+                item.failure_mode_id,
+                item.record_id,
+                item.sentence,
+                item.event_type.value,
+                item.repair_action_id,
+            )
+            for item in sorted(
+                context.technical_verifications, key=lambda item: item.verification_id
+            )
+        ]
+        connection.executemany(
+            """INSERT INTO guide_verifications (id, equipment_code, failure_mode_id,
+               record_id, sentence, event_type, repair_action_id)
+               VALUES (?,?,?,?,?,?,?)""",
+            rows,
+        )
+
+    def _insert_post_repair_events(self, connection: sqlite3.Connection, context: PipelineContext) -> None:
+        rows = [
+            (
+                item.event_id,
+                item.equipment_code,
+                item.failure_mode_id,
+                item.record_id,
+                item.sentence,
+                item.event_type.value,
+                item.repair_action_id,
+            )
+            for item in sorted(
+                context.post_repair_events, key=lambda item: item.event_id
+            )
+        ]
+        connection.executemany(
+            """INSERT INTO guide_post_repair_events (id, equipment_code, failure_mode_id,
+               record_id, sentence, event_type, repair_action_id)
+               VALUES (?,?,?,?,?,?,?)""",
+            rows,
         )
 
     def _insert_evidence(self, connection: sqlite3.Connection, context: PipelineContext) -> None:
@@ -631,6 +702,7 @@ class OutputDatabaseWriter:
                 "failure_modes", "equipment_failure_modes", "candidate_causes",
                 "repair_actions", "cause_repair_actions", "evidence",
                 "cause_evidence", "guide_sections", "safety_notes",
+                "guide_verifications", "guide_post_repair_events",
             }
             missing = required - tables
             if missing:
@@ -645,6 +717,8 @@ class OutputDatabaseWriter:
                 "candidate_causes": len(context.causes),
                 "repair_actions": len(context.repair_actions),
                 "evidence": len(context.evidence),
+                "guide_verifications": len(context.technical_verifications),
+                "guide_post_repair_events": len(context.post_repair_events),
             }
             for table, expected in counts.items():
                 actual = connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]

@@ -19,7 +19,11 @@ from maintenance_troubleshooting.domain.failure import CanonicalFailureMode
 from maintenance_troubleshooting.domain.guides import TroubleshootingGuide
 from maintenance_troubleshooting.domain.normalized import NormalizedRecord
 from maintenance_troubleshooting.domain.records import MaintenanceRecord
-from maintenance_troubleshooting.domain.repairs import RepairAction
+from maintenance_troubleshooting.domain.repairs import (
+    PostRepairEvent,
+    RepairAction,
+    TechnicalVerification,
+)
 from maintenance_troubleshooting.domain.run import AnalysisRun
 from maintenance_troubleshooting.inputs import ColumnMapping, InputReport
 from maintenance_troubleshooting.quality import DataQualityReport
@@ -46,6 +50,8 @@ class PipelineContext:
     evidence: list[RepairEvidence] = field(default_factory=list)
     causes: list[TroubleshootingCause] = field(default_factory=list)
     repair_actions: list[RepairAction] = field(default_factory=list)
+    technical_verifications: list[TechnicalVerification] = field(default_factory=list)
+    post_repair_events: list[PostRepairEvent] = field(default_factory=list)
     cause_repair_links: list[tuple[str, str]] = field(default_factory=list)
     guides: list[TroubleshootingGuide] = field(default_factory=list)
     safety_notes: list[dict[str, Any]] = field(default_factory=list)

@@ -69,6 +69,8 @@ class GuideView:
     sections: list[dict[str, Any]] = field(default_factory=list)
     safety_notes: list[dict[str, Any]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    verifications: list[dict[str, Any]] = field(default_factory=list)
+    post_repair_events: list[dict[str, Any]] = field(default_factory=list)
 
 
 class TroubleshootingRepository:
@@ -172,7 +174,8 @@ class TroubleshootingRepository:
     def _cause_view(self, row: dict[str, Any]) -> CauseView:
         actions = self._connection.execute(
             """SELECT ra.id, ra.category, ra.role, ra.action_text,
-                      ra.source_record_ids_json, ra.frequency
+                      ra.secondary_categories_json, ra.source_record_ids_json,
+                      ra.frequency
                FROM cause_repair_actions cra
                JOIN repair_actions ra ON ra.id = cra.repair_action_id
                WHERE cra.cause_id = ?
@@ -234,6 +237,30 @@ class TroubleshootingRepository:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_technical_verifications(
+        self, equipment_code: str, failure_mode_id: str
+    ) -> list[dict[str, Any]]:
+        """Verification steps attested for a scope (M11C D4)."""
+        rows = self._connection.execute(
+            """SELECT * FROM guide_verifications
+               WHERE equipment_code = ? AND failure_mode_id = ?
+               ORDER BY id""",
+            (equipment_code, failure_mode_id),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_post_repair_events(
+        self, equipment_code: str, failure_mode_id: str
+    ) -> list[dict[str, Any]]:
+        """Handover/outcome events attested for a scope (M11C D5)."""
+        rows = self._connection.execute(
+            """SELECT * FROM guide_post_repair_events
+               WHERE equipment_code = ? AND failure_mode_id = ?
+               ORDER BY id""",
+            (equipment_code, failure_mode_id),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def get_troubleshooting_guide(
         self, equipment_code: str, failure_mode_id: str
     ) -> GuideView | None:
@@ -252,6 +279,10 @@ class TroubleshootingRepository:
         ).fetchall()
         causes = self.list_candidate_causes(equipment_code, failure_mode_id)
         safety = self.list_safety_notes(equipment_code, failure_mode_id)
+        verifications = self.list_technical_verifications(
+            equipment_code, failure_mode_id
+        )
+        events = self.list_post_repair_events(equipment_code, failure_mode_id)
         return GuideView(
             equipment_code=equipment_code,
             failure_mode_id=failure_mode_id,
@@ -272,4 +303,6 @@ class TroubleshootingRepository:
                 if not any(cause.actions for cause in causes)
                 else []
             ),
+            verifications=verifications,
+            post_repair_events=events,
         )
