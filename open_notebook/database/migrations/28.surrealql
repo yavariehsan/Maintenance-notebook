@@ -1,0 +1,35 @@
+-- Migration 28: LLM troubleshooting knowledge (M12, downstream maintenance milestone)
+--
+-- Second, independent knowledge-generation path beside the deterministic
+-- text-mining pipeline. Mining knowledge lives in the offline SQLite
+-- Troubleshooting Database; LLM-derived knowledge lives here in SurrealDB
+-- in two new tables so the stores can never merge or overwrite each other:
+--
+-- 1. `llm_knowledge_build`: one row per generation run over one or more
+--    repair reports. Builds coexist (Build #1, #2, #3...) for audit; a new
+--    build never destroys a previous one.
+-- 2. `llm_knowledge_record`: one row per structured extraction. Every row
+--    carries its build, stable source report/record IDs, the verbatim
+--    source text, and per-item DATA_SUPPORTED vs LLM_INFERRED provenance.
+--
+-- Identity is always stable record IDs, never filenames.
+--
+-- Schema choice: both tables are SCHEMALESS, matching every other
+-- application table (repair_report, repair_analysis_run, command).
+-- SCHEMAFULL was tried first and rejected: on SurrealDB 2.6.5, array
+-- and object field types on schemafull tables SILENTLY DROP values
+-- (verified: CONTENT {a: [1,2]} stores [] for TYPE array and
+-- array<any>; CONTENT {m: [{report_id: 'x'}]} stores [{}] for
+-- TYPE array<object>). Type safety lives in the service layer
+-- (api/llm_knowledge_service.py Pydantic validation + tests), never in
+-- lossy field coercion.
+
+DEFINE TABLE IF NOT EXISTS llm_knowledge_build SCHEMALESS;
+DEFINE INDEX IF NOT EXISTS idx_llm_build_status ON TABLE llm_knowledge_build FIELDS status;
+
+DEFINE TABLE IF NOT EXISTS llm_knowledge_record SCHEMALESS;
+DEFINE INDEX IF NOT EXISTS idx_llm_record_build ON TABLE llm_knowledge_record FIELDS build_id;
+DEFINE INDEX IF NOT EXISTS idx_llm_record_source ON TABLE llm_knowledge_record FIELDS source_report_id;
+-- Resume safety: the worker skips records already persisted for a build,
+-- and the database rejects accidental double-writes of the same record.
+DEFINE INDEX IF NOT EXISTS idx_llm_record_unique ON TABLE llm_knowledge_record FIELDS build_id, source_record_id UNIQUE;

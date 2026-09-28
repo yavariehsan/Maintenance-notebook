@@ -32,6 +32,22 @@ vi.mock('@/lib/hooks/use-repair-reports', () => ({
   useDeleteRepairReport: vi.fn(),
 }))
 
+vi.mock('@/lib/hooks/use-llm-knowledge', () => ({
+  useLLMBuilds: vi.fn(),
+  useLLMBuild: vi.fn(),
+  useLLMGuide: vi.fn(),
+  useStartLLMBuild: vi.fn(),
+}))
+
+import {
+  useLLMBuilds,
+  useStartLLMBuild,
+} from '@/lib/hooks/use-llm-knowledge'
+import type { LLMKnowledgeBuild } from '@/lib/api/llm-knowledge'
+
+const mockUseLLMBuilds = vi.mocked(useLLMBuilds)
+const mockUseStartLLMBuild = vi.mocked(useStartLLMBuild)
+
 const mockUseReport = vi.mocked(useRepairReport)
 const mockUsePreview = vi.mocked(useRepairReportPreview)
 const mockUseActions = vi.mocked(useRepairReportActions)
@@ -140,6 +156,16 @@ function mockHooks(state: RepairReport['analysis_state']) {  mockUseReport.mockR
     mutate: vi.fn(),
     isPending: false,
   } as unknown as ReturnType<typeof useDeleteRepairReport>)
+  mockUseLLMBuilds.mockReturnValue({
+    data: [],
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(),
+  } as unknown as ReturnType<typeof useLLMBuilds>)
+  mockUseStartLLMBuild.mockReturnValue({
+    mutate: vi.fn(),
+    isPending: false,
+  } as unknown as ReturnType<typeof useStartLLMBuild>)
 }
 
 describe('RepairReportDetailScreen', () => {
@@ -219,5 +245,89 @@ describe('RepairReportDetailScreen', () => {
     mockHooks('processing')
     const { spy } = renderDetail('repair_report:abc')
     expect(spy).not.toHaveBeenCalledWith({ queryKey: ['troubleshooting'] })
+  })
+
+  it('starts an LLM build for this report and lists covering builds', () => {
+    const mutate = vi.fn()
+    mockHooks('completed')
+    const covering: LLMKnowledgeBuild = {
+      id: 'llm_knowledge_build:7',
+      source_report_ids: ['repair_report:abc'],
+      manifest: [],
+      status: 'completed',
+      command_id: 'command:9',
+      model: 'model:chat',
+      prompt_version: 'm12-v1',
+      error: null,
+      warnings: [],
+      record_count: 4,
+      failed_record_count: 0,
+      created: '2026-09-28T10:00:00',
+      started_at: null,
+      finished_at: '2026-09-28T10:01:00',
+    }
+    const other: LLMKnowledgeBuild = {
+      ...covering,
+      id: 'llm_knowledge_build:8',
+      source_report_ids: ['repair_report:other'],
+    }
+    mockUseLLMBuilds.mockReturnValue({
+      data: [covering, other],
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useLLMBuilds>)
+    mockUseStartLLMBuild.mockReturnValue({
+      mutate,
+      isPending: false,
+    } as unknown as ReturnType<typeof useStartLLMBuild>)
+    renderDetail('repair_report:abc')
+    selectTab('repairReports.analysisTab')
+
+    expect(screen.getByText('llmKnowledge.buildsTitle')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('llmKnowledge.startBuildButton'))
+    expect(mutate).toHaveBeenCalledWith(['repair_report:abc'])
+    // Only builds covering this report are listed (stable IDs, not names).
+    const section = screen.getByTestId('llm-builds')
+    expect(section.textContent).toContain('llm_knowledge_build:7'.slice(-6))
+    expect(section.textContent).not.toContain('llm_knowledge_build:8'.slice(-6))
+  })
+
+  it('shows the LLM empty state when no build covers the report', () => {
+    mockHooks('not_analyzed')
+    renderDetail('repair_report:abc')
+    selectTab('repairReports.analysisTab')
+    expect(screen.getByText('llmKnowledge.noBuildsDescription')).toBeInTheDocument()
+    expect(screen.getByText('llmKnowledge.startBuildButton')).toBeEnabled()
+  })
+
+  it('disables the LLM build button while a build is active', () => {
+    mockHooks('not_analyzed')
+    mockUseLLMBuilds.mockReturnValue({
+      data: [
+        {
+          id: 'llm_knowledge_build:7',
+          source_report_ids: ['repair_report:abc'],
+          manifest: [],
+          status: 'running',
+          command_id: 'command:9',
+          model: null,
+          prompt_version: 'm12-v1',
+          error: null,
+          warnings: [],
+          record_count: null,
+          failed_record_count: null,
+          created: '2026-09-28T10:00:00',
+          started_at: null,
+          finished_at: null,
+        },
+      ],
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useLLMBuilds>)
+    renderDetail('repair_report:abc')
+    selectTab('repairReports.analysisTab')
+    expect(screen.getByText('llmKnowledge.startBuildButton')).toBeDisabled()
   })
 })

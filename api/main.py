@@ -34,6 +34,7 @@ from api.routers import (
     episode_profiles,
     insights,
     languages,
+    llm_knowledge,
     maintenance,
     models,
     notebooks,
@@ -414,6 +415,9 @@ app.include_router(languages.router, prefix="/api", tags=["languages"])
 app.include_router(maintenance.router, prefix="/api", tags=["maintenance"])
 app.include_router(
     troubleshooting.router, prefix="/api", tags=["troubleshooting"]
+)
+app.include_router(
+    llm_knowledge.router, prefix="/api", tags=["llm-knowledge"]
 )
 app.include_router(
     repair_reports.router, prefix="/api", tags=["repair-reports"]

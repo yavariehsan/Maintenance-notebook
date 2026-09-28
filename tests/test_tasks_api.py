@@ -44,7 +44,11 @@ def _repo_factory(commands):
     async def _repo(query, params=None):
         if "analyze_repair_reports" in query:
             return []
+        if "generate_llm_knowledge" in query:
+            return []
         if "FROM repair_analysis_run" in query:
+            return []
+        if "FROM llm_knowledge_build" in query:
             return []
         if "FROM repair_report" in query:
             return []
@@ -243,6 +247,10 @@ async def test_tasks_sorted_by_updated_desc(mock_repo, client):
 
     async def _repo(query, params=None):
         if "analyze_repair_reports" in query:
+            return []
+        if "generate_llm_knowledge" in query:
+            return []
+        if "FROM llm_knowledge_build" in query:
             return []
         if "FROM repair_analysis_run" in query:
             return []

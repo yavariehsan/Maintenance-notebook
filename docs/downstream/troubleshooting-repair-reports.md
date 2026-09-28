@@ -159,6 +159,13 @@ file. 404 for unknown reports, 409 while the report is being analyzed
 
 ## Repair Guide source selection
 
+The Repair Guide screen opens with a Knowledge Source selector
+(Text Mining | LLM) followed by source scoping. Text Mining is the
+existing deterministic flow below; LLM mode queries only the LLM
+Knowledge DB (never merged).
+
+### Text Mining mode (unchanged)
+
 The Repair Guide screen opens with a source-report selector (Step 0)
 listing uploaded repair reports by stable record ID, each labeled with
 filename, row count, upload time, and short ID so duplicate filenames
@@ -168,6 +175,44 @@ that was deleted renders a warning and is never remapped. Selecting a
 source outside the backing run hides the guides (mismatch state)
 instead of showing another source's knowledge; with no completed run
 known, browsing behaves as before.
+
+### LLM mode (M12)
+
+- **Builds.** `llm_knowledge_build` rows (migration 28): one per
+  generation run over selected repair reports. Builds coexist
+  (completed / partial / failed / queued / running / cancelled) and
+  are never destroyed by newer builds. Created from the report
+  detail's تحلیل tab ("Generate LLM Knowledge") or
+  `POST /repair-reports/llm-builds`; an equivalent build that is
+  still active yields 409 with the live build ID instead of a
+  duplicate.
+- **Records.** `llm_knowledge_record` rows: one validated extraction
+  per workbook row with `build_id`, stable `source_report_id` /
+  `source_record_id` (`<analysis_key>-LLMROW-<sheet>-<excel_row>`),
+  verbatim `source_text`, and per-item `DATA_SUPPORTED` vs
+  `LLM_INFERRED` provenance. Failed records persist their
+  `record_error` traceably and never invalidate sibling records.
+- **Pipeline (no embeddings — not RAG).** Workbook bytes →
+  deterministic row extraction → one structured LLM call per record
+  (`LLMKnowledgeGenerator` over the configured language model via
+  `provision_langchain_model`) → JSON validation (malformed / missing
+  fields / bad enums / wrong shape / empty rejected) → semantic
+  post-rules (standalone `تست شد` → verification only,
+  `تست و تحویل شد` → verification + handover event, pure
+  closure/handover → event, never a corrective action) → SurrealDB.
+  The mining SQLite database is never read or written by this path.
+- **Guide.** `GET /troubleshooting/llm/guide?build_id=&source_report_id=`
+  returns only the selected source's records (explicit
+  `no_records_for_source` empty state); a deleted backing report
+  keeps its stable identity with `source_deleted` and is never
+  remapped. Every response carries `knowledge_source=LLM`,
+  `build_id`, `model`, `prompt_version` (`m12-v1`), and the source
+  IDs; the UI splits Historical Evidence from LLM-derived
+  interpretation with per-item basis badges.
+- **Failure isolation.** A failed build/record leaves reports, mining
+  knowledge, guides, and embeddings untouched. With zero LLM builds,
+  Text Mining works exactly as before (no LLM configuration
+  required).
 
 ## Endpoints (all under `/api`)
 
@@ -182,6 +227,14 @@ verifications / handover-outcome events / history-only records, 422
 when the database is unavailable) ·
 `POST /repair-reports/analyze` (legacy collection-wide, 409 when busy) ·
 `GET /repair-reports/runs[/{id}]` ·
+`POST /repair-reports/llm-builds` (201 new build; 409 with live
+build ID while an equivalent build is active; 404 unknown report;
+400 empty selection; 422 when no language model is configured) ·
+`GET /repair-reports/llm-builds[/{id}]` ·
+`GET /repair-reports/llm-builds/{id}/records[?source_report_id=]` ·
+`GET /troubleshooting/llm/guide?build_id=&source_report_id=`
+(`knowledge_source=LLM` + provenance; explicit empty/deleted-source
+states, never cross-source mixing) ·
 `DELETE /tasks/{job_id}` (terminal command rows only — never files,
 reports, runs, or knowledge; 409 while active, 404 unknown) ·
 `DELETE /tasks/history` (terminal task records only; active jobs kept;
@@ -191,6 +244,14 @@ idempotent).
 
 - Backend: `tests/test_repair_reports.py` — mocked-SurrealDB router
   tests + real-engine aggregate/runtime chain on synthetic fixtures.
+- Backend (M12): `tests/test_llm_knowledge_service.py` — extraction
+  contract validation, semantic post-rules (`تست شد` cases),
+  record-ID stability, build idempotency/stale-heal, guide
+  source-isolation/deleted-source/versioning; no LLM or DB.
+  `tests/test_llm_knowledge_api.py` — router contract (201/409/400/
+  404/422, scoping, provenance, empty states), worker partial-failure
+  behavior with an injected fake LLM, resume-without-duplicates, and
+  Tasks-page surfacing of the `generate_llm_knowledge` family.
 - Frontend: screen tests (list, two-tab detail, guide flow) with mocked
   hooks + API client tests; navigation and locale-parity coverage.
 

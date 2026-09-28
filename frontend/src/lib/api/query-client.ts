@@ -58,4 +58,10 @@ export const QUERY_KEYS = {
   repairReportActions: (id: string) => ['repair-reports', id, 'actions'] as const,
   repairAnalysisRuns: ['repair-reports', 'runs'] as const,
   repairAnalysisRun: (id: string) => ['repair-reports', 'runs', id] as const,
+  llmBuilds: ['repair-reports', 'llm-builds'] as const,
+  llmBuild: (id: string) => ['repair-reports', 'llm-builds', id] as const,
+  llmBuildRecords: (id: string, sourceReportId?: string) =>
+    ['repair-reports', 'llm-builds', id, 'records', sourceReportId ?? ''] as const,
+  llmGuide: (buildId: string, sourceReportId: string) =>
+    ['troubleshooting', 'llm', buildId, sourceReportId] as const,
 }

@@ -23,7 +23,8 @@ class TaskItem(BaseModel):
 
     job_id: str = Field(..., description="Command/job ID")
     item_type: str = Field(
-        ..., description="Embedded item type: 'source' or 'repair_analysis'"
+        ...,
+        description="Job family: 'source', 'repair_analysis' or 'llm_knowledge'",
     )
     command_name: Optional[str] = Field(
         None, description="surreal-commands command name"
@@ -158,6 +159,7 @@ async def list_tasks(limit: int = Query(50, ge=1, le=200)):
         )
 
     tasks.extend(await _repair_analysis_tasks(limit))
+    tasks.extend(await _llm_knowledge_tasks(limit))
 
     # Most recently updated first across both job families (canonical
     # last-update ordering; creation time then stable job ID break ties
@@ -183,6 +185,7 @@ TASK_COMMAND_FAMILIES = (
     "embed_note",
     "embed_insight",
     "analyze_repair_reports",
+    "generate_llm_knowledge",
 )
 
 #: Command statuses that are safe to clear: terminal history only.
@@ -310,6 +313,97 @@ async def _repair_analysis_tasks(limit: int) -> List[TaskItem]:
                 total_chunks=None,
                 # No chunk counts exist for analysis jobs: indeterminate
                 # while active, 100% once completed — never estimated.
+                percentage=100.0 if status == "completed" else None,
+                chunks_created=None,
+                created=str(cmd.get("created"))
+                if cmd.get("created") is not None
+                else None,
+                updated=str(cmd.get("updated"))
+                if cmd.get("updated") is not None
+                else None,
+                started_at=str(cmd.get("started_at"))
+                if cmd.get("started_at") is not None
+                else None,
+                updated_at=str(cmd.get("updated_at"))
+                if cmd.get("updated_at") is not None
+                else None,
+                error_message=cmd.get("error_message") or result.get("error_message"),
+            )
+        )
+    return items
+
+
+async def _llm_knowledge_tasks(limit: int) -> List[TaskItem]:
+    """LLM knowledge-build commands as task rows (one truth with builds).
+
+    The command record carries execution state; the linked
+    ``llm_knowledge_build`` carries the report set. Displayed titles are
+    stored filenames (data, never paths). Mining tasks are untouched.
+    """
+    from open_notebook.database.repository import repo_query
+
+    try:
+        commands = await repo_query(
+            "SELECT * FROM command WHERE app = 'open_notebook' "
+            "AND name = 'generate_llm_knowledge' ORDER BY created DESC "
+            "LIMIT $limit",
+            {"limit": limit},
+        )
+    except Exception as e:
+        logger.error(f"Failed to list LLM knowledge tasks: {e}")
+        return []
+    if not commands:
+        return []
+
+    build_ids = {
+        str((cmd.get("args") or {}).get("build_id"))
+        for cmd in commands
+        if (cmd.get("args") or {}).get("build_id")
+    }
+    builds: dict = {}
+    report_ids: set = set()
+    try:
+        for row in await repo_query(
+            "SELECT id, source_report_ids FROM llm_knowledge_build"
+        ):
+            bid = str(row.get("id"))
+            if bid in build_ids:
+                ids = [str(item) for item in row.get("source_report_ids") or []]
+                builds[bid] = ids
+                report_ids.update(ids)
+    except Exception as e:
+        logger.debug(f"Failed to load LLM builds for tasks: {e}")
+
+    filenames: dict = {}
+    try:
+        for row in await repo_query("SELECT id, filename FROM repair_report"):
+            filenames[str(row.get("id"))] = row.get("filename")
+    except Exception as e:
+        logger.debug(f"Failed to load report filenames for tasks: {e}")
+
+    items: List[TaskItem] = []
+    for cmd in commands:
+        args = cmd.get("args") or {}
+        result = cmd.get("result") or {}
+        status = str(cmd.get("status") or "unknown")
+        build_id = str(args.get("build_id")) if args.get("build_id") else None
+        names = [
+            filenames.get(rid, rid)
+            for rid in builds.get(build_id, [])
+            if build_id is not None
+        ]
+        items.append(
+            TaskItem(
+                job_id=str(cmd.get("id")),
+                item_type="llm_knowledge",
+                command_name="generate_llm_knowledge",
+                run_id=build_id,
+                title=", ".join(name for name in names if name) or None,
+                source_id=None,
+                source_title=None,
+                status=status,
+                processed_chunks=None,
+                total_chunks=None,
                 percentage=100.0 if status == "completed" else None,
                 chunks_created=None,
                 created=str(cmd.get("created"))

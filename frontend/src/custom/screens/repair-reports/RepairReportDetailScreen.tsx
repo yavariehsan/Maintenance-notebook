@@ -31,6 +31,10 @@ import {
   useRepairReportPreview,
   useStartSingleReportAnalysis,
 } from '@/lib/hooks/use-repair-reports'
+import {
+  useLLMBuilds,
+  useStartLLMBuild,
+} from '@/lib/hooks/use-llm-knowledge'
 import { useTranslation } from '@/lib/hooks/use-translation'
 import type { RepairReport } from '@/lib/api/repair-reports'
 
@@ -74,6 +78,25 @@ function statusDescKey(state: RepairReport['analysis_state']): string {
   }
 }
 
+function llmBuildStatusKey(status: string): string {
+  switch (status) {
+    case 'queued':
+      return 'llmKnowledge.statusQueued'
+    case 'running':
+      return 'llmKnowledge.statusRunning'
+    case 'completed':
+      return 'llmKnowledge.statusCompleted'
+    case 'partial':
+      return 'llmKnowledge.statusPartial'
+    case 'failed':
+      return 'llmKnowledge.statusFailed'
+    case 'cancelled':
+      return 'llmKnowledge.statusCancelled'
+    default:
+      return 'llmKnowledge.statusQueued'
+  }
+}
+
 function formatCell(value: string | number | boolean | null): string {
   if (value === null || value === undefined) return '—'
   if (typeof value === 'boolean') return value ? '✓' : '✗'
@@ -98,6 +121,8 @@ export function RepairReportDetailScreen({ reportId }: { reportId: string }) {
   } = useRepairReportPreview(reportId)
   const analyzeMutation = useStartSingleReportAnalysis(reportId)
   const deleteMutation = useDeleteRepairReport()
+  const llmBuildsQuery = useLLMBuilds()
+  const startLlmBuildMutation = useStartLLMBuild()
   const [confirmDelete, setConfirmDelete] = useState(false)
   const {
     data: actions,
@@ -386,6 +411,12 @@ export function RepairReportDetailScreen({ reportId }: { reportId: string }) {
   const renderAnalysis = () => {
     if (!report) return null
     const active = report.analysis_state === 'queued' || report.analysis_state === 'processing'
+    const reportBuilds = (llmBuildsQuery.data ?? []).filter((build) =>
+      build.source_report_ids.includes(reportId),
+    )
+    const llmActive = reportBuilds.some(
+      (build) => build.status === 'queued' || build.status === 'running',
+    )
     return (
       <div className="space-y-4">
         <Card>
@@ -445,6 +476,82 @@ export function RepairReportDetailScreen({ reportId }: { reportId: string }) {
               {t('repairReports.actionsDescription')}
             </p>
             {renderActions()}
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">{t('llmKnowledge.buildsTitle')}</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4" data-testid="llm-builds">
+            <p className="text-sm text-muted-foreground">
+              {t('llmKnowledge.buildsDescription')}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              {t('llmKnowledge.startBuildHint')}
+            </p>
+            <Button
+              onClick={() => startLlmBuildMutation.mutate([reportId])}
+              disabled={startLlmBuildMutation.isPending || llmActive}
+            >
+              {startLlmBuildMutation.isPending || llmActive ? (
+                <LoadingSpinner size="sm" className="me-2" />
+              ) : null}
+              {t('llmKnowledge.startBuildButton')}
+            </Button>
+            {llmBuildsQuery.isError ? (
+              <Alert variant="destructive">
+                <AlertCircle className="h-4 w-4" />
+                <AlertTitle>{t('common.error')}</AlertTitle>
+                <AlertDescription className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <span>{t('llmKnowledge.buildFailed')}</span>
+                  <Button variant="outline" size="sm" onClick={() => llmBuildsQuery.refetch()} className="shrink-0">
+                    <RefreshCw className="h-4 w-4 me-2" />
+                    {t('common.refresh')}
+                  </Button>
+                </AlertDescription>
+              </Alert>
+            ) : reportBuilds.length === 0 ? (
+              <div className="space-y-1">
+                <p className="text-sm font-medium">{t('llmKnowledge.noBuildsTitle')}</p>
+                <p className="text-sm text-muted-foreground">
+                  {t('llmKnowledge.noBuildsDescription')}
+                </p>
+              </div>
+            ) : (
+              <ul className="flex flex-col gap-2">
+                {reportBuilds.map((build) => (
+                  <li
+                    key={build.id}
+                    className="flex flex-wrap items-center gap-2 text-sm"
+                  >
+                    <Badge variant="secondary" className="font-mono text-[11px]">
+                      {t(llmBuildStatusKey(build.status))}
+                    </Badge>
+                    <span className="font-mono text-xs text-muted-foreground">
+                      {build.id.slice(-6)}
+                    </span>
+                    {typeof build.record_count === 'number' && (
+                      <span className="text-xs text-muted-foreground">
+                        {t('llmKnowledge.recordsLabel', { ok: build.record_count })}
+                        {typeof build.failed_record_count === 'number' && build.failed_record_count > 0
+                          ? ` · ${t('llmKnowledge.recordsFailedLabel', { failed: build.failed_record_count })}`
+                          : ''}
+                      </span>
+                    )}
+                    {build.error && (
+                      <span className="block w-full font-mono text-xs text-destructive">
+                        {t('llmKnowledge.buildErrorLabel')}: {build.error}
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {reportBuilds.length > 0 && (
+              <p className="text-xs text-muted-foreground">
+                {t('llmKnowledge.useInGuideHint')}
+              </p>
+            )}
           </CardContent>
         </Card>
       </div>

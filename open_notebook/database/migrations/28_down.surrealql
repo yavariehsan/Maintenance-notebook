@@ -1,0 +1,5 @@
+-- Migration 28 down: remove LLM troubleshooting knowledge tables.
+DELETE llm_knowledge_record;
+DELETE llm_knowledge_build;
+REMOVE TABLE IF EXISTS llm_knowledge_record;
+REMOVE TABLE IF EXISTS llm_knowledge_build;

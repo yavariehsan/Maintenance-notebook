@@ -40,17 +40,34 @@ vi.mock('@/lib/hooks/use-repair-reports', () => ({
   useDeleteRepairReport: vi.fn(),
 }))
 
+vi.mock('@/lib/hooks/use-llm-knowledge', () => ({
+  useLLMBuilds: vi.fn(),
+  useLLMBuild: vi.fn(),
+  useLLMGuide: vi.fn(),
+  useStartLLMBuild: vi.fn(),
+}))
+
 import {
   useRepairAnalysisRuns,
   useRepairReports,
 } from '@/lib/hooks/use-repair-reports'
+import {
+  useLLMBuilds,
+  useLLMGuide,
+} from '@/lib/hooks/use-llm-knowledge'
 import type {
   RepairAnalysisRun,
   RepairReport,
 } from '@/lib/api/repair-reports'
+import type {
+  LLMGuide,
+  LLMKnowledgeBuild,
+} from '@/lib/api/llm-knowledge'
 
 const mockSourceReports = vi.mocked(useRepairReports)
 const mockAnalysisRuns = vi.mocked(useRepairAnalysisRuns)
+const mockLLMBuilds = vi.mocked(useLLMBuilds)
+const mockLLMGuide = vi.mocked(useLLMGuide)
 
 const mockStatus = vi.mocked(useTroubleshootingStatus)
 const mockEquipment = vi.mocked(useTroubleshootingEquipment)
@@ -180,6 +197,8 @@ function mockAll(overrides: {
   guideData?: TroubleshootingGuide | undefined
   sourceReports?: RepairReport[] | undefined
   analysisRuns?: RepairAnalysisRun[] | undefined
+  llmBuilds?: LLMKnowledgeBuild[] | undefined
+  llmGuideData?: LLMGuide | undefined
 } = {}) {
   mockStatus.mockReturnValue({
     data: overrides.status ?? available,
@@ -217,6 +236,18 @@ function mockAll(overrides: {
     isError: false,
     refetch: vi.fn(),
   } as unknown as ReturnType<typeof useRepairAnalysisRuns>)
+  mockLLMBuilds.mockReturnValue({
+    data: overrides.llmBuilds ?? [],
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(),
+  } as unknown as ReturnType<typeof useLLMBuilds>)
+  mockLLMGuide.mockReturnValue({
+    data: overrides.llmGuideData,
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(),
+  } as unknown as ReturnType<typeof useLLMGuide>)
 }
 
 const sourceA: RepairReport = {
@@ -476,5 +507,183 @@ describe('TroubleshootingGuideScreen', () => {
     // (mock t renders the basedOn key) with source record refs intact.
     expect(unified.textContent).toMatch(/troubleshootingGuide\.basedOnLabel/)
     expect(unified.textContent).toMatch(/k-B-1/)
+  })
+
+  // --- M12: Knowledge Source selector (Text Mining vs LLM) --------------------
+
+  const llmBuild: LLMKnowledgeBuild = {
+    id: 'llm_knowledge_build:12',
+    source_report_ids: ['repair_report:aaa', 'repair_report:bbb'],
+    manifest: [
+      { report_id: 'repair_report:aaa', filename: 'cmms.xlsx', analysis_key: 'k1' },
+      { report_id: 'repair_report:bbb', filename: 'cmms.xlsx', analysis_key: 'k2' },
+    ],
+    status: 'completed',
+    command_id: 'command:llm1',
+    model: 'model:chat',
+    prompt_version: 'm12-v1',
+    error: null,
+    warnings: [],
+    record_count: 2,
+    failed_record_count: 0,
+    created: '2026-09-28T10:00:00',
+    started_at: null,
+    finished_at: '2026-09-28T10:01:00',
+  }
+
+  const llmGuideData: LLMGuide = {
+    knowledge_source: 'LLM',
+    build_id: 'llm_knowledge_build:12',
+    model: 'model:chat',
+    prompt_version: 'm12-v1',
+    source_report_id: 'repair_report:aaa',
+    source_filename: 'cmms.xlsx',
+    source_deleted: false,
+    records: [
+      {
+        id: 'llm_knowledge_record:1',
+        build_id: 'llm_knowledge_build:12',
+        source_report_id: 'repair_report:aaa',
+        source_record_id: 'k1-LLMROW-Sheet1-2',
+        source_text: 'عیب: لرزش بستر',
+        symptom: 'لرزش بستر',
+        findings: [
+          { text: 'سایش گاید', basis: 'DATA_SUPPORTED', source_quote: 'سایش' },
+        ],
+        candidate_causes: [
+          { text: 'خرابی گایدها', basis: 'LLM_INFERRED', source_quote: null },
+        ],
+        diagnostic_steps: [],
+        corrective_actions: [],
+        verification_steps: [
+          { text: 'تست شد', basis: 'DATA_SUPPORTED', source_quote: 'تست شد' },
+        ],
+        post_repair_events: [],
+        record_error: null,
+        created: '2026-09-28T10:00:00',
+      },
+    ],
+    warnings: [],
+  }
+
+  function switchToLLM() {
+    fireEvent.click(screen.getByRole('button', { name: 'troubleshootingGuide.knowledgeSourceLLM' }))
+  }
+
+  it('offers Text Mining and LLM sources with mining as default', () => {
+    mockAll({ modesData: [] })
+    render(<TroubleshootingGuideScreen />)
+    expect(
+      screen.getByRole('button', { name: 'troubleshootingGuide.knowledgeSourceMining' }),
+    ).toHaveAttribute('aria-pressed', 'true')
+    expect(
+      screen.getByRole('button', { name: 'troubleshootingGuide.knowledgeSourceLLM' }),
+    ).toHaveAttribute('aria-pressed', 'false')
+    // Mining behavior unchanged: no LLM content leaks in.
+    expect(screen.queryByTestId('llm-guide')).not.toBeInTheDocument()
+    expect(screen.getByText('troubleshootingGuide.selectEquipmentTitle')).toBeInTheDocument()
+  })
+
+  it('shows the no-builds empty state when no LLM build exists', async () => {
+    mockAll({ modesData: [], llmBuilds: [] })
+    render(<TroubleshootingGuideScreen />)
+    await switchToLLM()
+    expect(screen.getByText('troubleshootingGuide.noLLMBuildsTitle')).toBeInTheDocument()
+  })
+
+  it('selects build and source, then shows provenance with historical/inferred split', async () => {
+    mockAll({
+      modesData: [],
+      sourceReports: [sourceA, sourceB],
+      llmBuilds: [llmBuild],
+      llmGuideData,
+    })
+    render(<TroubleshootingGuideScreen />)
+    await switchToLLM()
+
+    // Source options come from the build manifest: duplicate filenames
+    // stay distinguishable by stable short ID.
+    const boxes = screen.getAllByRole('combobox')
+    fireEvent.click(boxes[boxes.length - 1])
+    const options = await screen.findAllByRole('option')
+    expect(options).toHaveLength(2)
+    expect(options[0].textContent).toContain('cmms.xlsx')
+    expect(options[0].textContent).not.toBe(options[1].textContent)
+    fireEvent.click(options[0])
+
+    await waitFor(() => {
+      expect(screen.getByTestId('llm-guide')).toBeInTheDocument()
+    })
+    const panel = screen.getByTestId('llm-guide')
+    // Provenance header: source, build, model, prompt version, report ID.
+    expect(panel.textContent).toMatch(/troubleshootingGuide\.knowledgeSourceLLM/)
+    expect(panel.textContent).toMatch(/model:chat/)
+    expect(panel.textContent).toMatch(/m12-v1/)
+    expect(panel.textContent).toMatch(/repair_report:aaa/)
+    // Historical evidence vs LLM interpretation stay visually distinct.
+    expect(panel.textContent).toMatch(/troubleshootingGuide\.llmHistoricalTitle/)
+    expect(panel.textContent).toMatch(/troubleshootingGuide\.llmInferredTitle/)
+    expect(panel.textContent).toMatch(/troubleshootingGuide\.llmSupportedBadge/)
+    expect(panel.textContent).toMatch(/troubleshootingGuide\.llmInferredBadge/)
+    expect(panel.textContent).toMatch(/سایش گاید/)
+    expect(panel.textContent).toMatch(/خرابی گایدها/)
+    // Verbatim source text is preserved, never rewritten.
+    expect(panel.textContent).toMatch(/عیب: لرزش بستر/)
+    // Mining guide is never rendered alongside.
+    expect(screen.queryByText('troubleshootingGuide.causesTitle')).not.toBeInTheDocument()
+  })
+
+  it('shows the deleted-source state without remapping', async () => {
+    mockAll({
+      modesData: [],
+      sourceReports: [sourceB],
+      llmBuilds: [llmBuild],
+      llmGuideData: {
+        ...llmGuideData,
+        source_filename: null,
+        source_deleted: true,
+        records: [],
+        warnings: ['source_deleted'],
+      },
+    })
+    render(<TroubleshootingGuideScreen />)
+    await switchToLLM()
+
+    const boxes = screen.getAllByRole('combobox')
+    fireEvent.click(boxes[boxes.length - 1])
+    const options = await screen.findAllByRole('option')
+    // The deleted manifest entry is marked unavailable (✕), not remapped
+    // to the surviving same-named file.
+    expect(options.some((option) => option.textContent?.includes('✕'))).toBe(true)
+    fireEvent.click(options[0])
+    await waitFor(() => {
+      expect(
+        screen.getByText('troubleshootingGuide.llmSourceDeletedTitle'),
+      ).toBeInTheDocument()
+    })
+  })
+
+  it('shows the empty-records state when the build has nothing for the source', async () => {
+    mockAll({
+      modesData: [],
+      sourceReports: [sourceA, sourceB],
+      llmBuilds: [llmBuild],
+      llmGuideData: {
+        ...llmGuideData,
+        records: [],
+        warnings: ['no_records_for_source'],
+      },
+    })
+    render(<TroubleshootingGuideScreen />)
+    await switchToLLM()
+
+    const boxes = screen.getAllByRole('combobox')
+    fireEvent.click(boxes[boxes.length - 1])
+    fireEvent.click((await screen.findAllByRole('option'))[0])
+    await waitFor(() => {
+      expect(
+        screen.getByText('troubleshootingGuide.llmNoRecordsTitle'),
+      ).toBeInTheDocument()
+    })
   })
 })
