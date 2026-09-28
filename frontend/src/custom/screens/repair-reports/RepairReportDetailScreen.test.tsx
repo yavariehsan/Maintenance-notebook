@@ -5,8 +5,9 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RepairReportDetailScreen } from './RepairReportDetailScreen'
 import {
   useRepairReport,
+  useRepairReportActions,
   useRepairReportPreview,
-  useStartRepairAnalysis,
+  useStartSingleReportAnalysis,
 } from '@/lib/hooks/use-repair-reports'
 import type {
   RepairReport,
@@ -22,14 +23,17 @@ vi.mock('@/lib/hooks/use-repair-reports', () => ({
   useRepairReports: vi.fn(),
   useRepairReport: vi.fn(),
   useRepairReportPreview: vi.fn(),
+  useRepairReportActions: vi.fn(),
   useRepairAnalysisRuns: vi.fn(),
   useUploadRepairReport: vi.fn(),
   useStartRepairAnalysis: vi.fn(),
+  useStartSingleReportAnalysis: vi.fn(),
 }))
 
 const mockUseReport = vi.mocked(useRepairReport)
 const mockUsePreview = vi.mocked(useRepairReportPreview)
-const mockUseAnalyze = vi.mocked(useStartRepairAnalysis)
+const mockUseActions = vi.mocked(useRepairReportActions)
+const mockUseAnalyze = vi.mocked(useStartSingleReportAnalysis)
 
 function makeWrapper() {
   const client = new QueryClient({
@@ -109,10 +113,26 @@ function mockHooks(state: RepairReport['analysis_state']) {  mockUseReport.mockR
     isError: false,
     refetch: vi.fn(),
   } as unknown as ReturnType<typeof useRepairReportPreview>)
+  mockUseActions.mockReturnValue({
+    data: {
+      report_id: 'repair_report:abc',
+      analysis_key: 'a3f9c2e1',
+      run_id: null,
+      record_ids: [],
+      repair_actions: [],
+      verifications: [],
+      post_repair_events: [],
+      history_only_record_ids: [],
+      warnings: [],
+    },
+    isLoading: false,
+    isError: false,
+    refetch: vi.fn(),
+  } as unknown as ReturnType<typeof useRepairReportActions>)
   mockUseAnalyze.mockReturnValue({
     mutate: vi.fn(),
     isPending: false,
-  } as unknown as ReturnType<typeof useStartRepairAnalysis>)
+  } as unknown as ReturnType<typeof useStartSingleReportAnalysis>)
 }
 
 describe('RepairReportDetailScreen', () => {
@@ -182,6 +202,9 @@ describe('RepairReportDetailScreen', () => {
     expect(spy).toHaveBeenCalledWith({ queryKey: ['troubleshooting'] })
     expect(spy).toHaveBeenCalledWith({
       queryKey: ['repair-reports'],
+    })
+    expect(spy).toHaveBeenCalledWith({
+      queryKey: ['repair-reports', 'repair_report:abc', 'actions'],
     })
   })
 

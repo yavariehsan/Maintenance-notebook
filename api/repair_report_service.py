@@ -26,8 +26,10 @@ Filesystem paths never leave this module: API responses carry the report
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import secrets
+import sqlite3
 from datetime import date, datetime, timezone
 from io import BytesIO
 from pathlib import Path
@@ -38,7 +40,11 @@ from openpyxl import load_workbook
 
 from open_notebook.config import REPAIR_REPORTS_FOLDER
 from open_notebook.database.repository import ensure_record_id, repo_query
-from open_notebook.exceptions import InvalidInputError, NotFoundError
+from open_notebook.exceptions import (
+    ConfigurationError,
+    InvalidInputError,
+    NotFoundError,
+)
 
 TABLE_REPORT = "repair_report"
 TABLE_RUN = "repair_analysis_run"
@@ -818,6 +824,10 @@ async def start_analysis() -> Dict[str, Any]:
     represents the whole collection, never just the newest file. Raises a
     409-style ``InvalidInputError``-adjacent error when a run is active —
     the router maps the dedicated ``AnalysisInProgressError`` below.
+
+    Kept for backward compatibility; new UI flows prefer
+    :func:`start_analysis_for_report` (single-report snapshot, no implicit
+    process-everything).
     """
     from api.command_service import CommandService
 
@@ -867,6 +877,329 @@ async def start_analysis() -> Dict[str, Any]:
     run["report_ids"] = [report["id"] for report in reports]
     logger.info(f"Submitted repair-report analysis run {run['id']}")
     return run
+
+
+async def start_analysis_for_report(report_id: str) -> Dict[str, Any]:
+    """Create a single-report analysis run and submit the worker command.
+
+    The run snapshots exactly one uploaded report: the generated database
+    represents that report alone (single-writer replacement — the previous
+    database stays live until the new one validates). No implicit
+    process-everything: only the requested report is queued. The run model
+    keeps the ``report_ids`` list (singleton) so worker/manifest handling
+    is unchanged. Raises ``AnalysisInProgressError`` while any run is
+    active (router maps to 409); ``NotFoundError`` for unknown reports;
+    ``InvalidInputError`` when the report is already completed (no
+    force-reprocess) or the worker is unavailable.
+    """
+    from api.command_service import CommandService
+
+    active = await get_active_run()
+    if active is not None:
+        raise AnalysisInProgressError(
+            "An analysis run is already in progress."
+        )
+    internal = await _get_report_internal(report_id)
+    state = str(internal.get("analysis_state") or STATE_NOT_ANALYZED)
+    if state in ACTIVE_REPORT_STATES:
+        raise AnalysisInProgressError(
+            "This report is already being analyzed."
+        )
+    if state == STATE_COMPLETED:
+        raise InvalidInputError(
+            "This report has already been analyzed."
+        )
+    resolved_id = str(internal["id"])
+    run = await create_run([resolved_id])
+
+    try:
+        import commands.repair_report_commands  # noqa: F401
+    except ImportError as e:
+        await mark_run_failed(run["id"], f"Analysis worker unavailable: {e}")
+        raise InvalidInputError("Analysis worker is unavailable.") from e
+
+    try:
+        command_id = await CommandService.submit_command_job(
+            "open_notebook",
+            ANALYZE_COMMAND_NAME,
+            {"run_id": run["id"]},
+        )
+    except Exception as e:
+        await mark_run_failed(run["id"], f"Failed to submit analysis: {e}")
+        raise
+
+    try:
+        await attach_command(run["id"], command_id)
+    except Exception as e:
+        await mark_run_failed(run["id"], f"Failed to attach analysis: {e}")
+        raise
+    try:
+        await _set_report_state(
+            resolved_id, STATE_QUEUED, run_id=run["id"], error=None
+        )
+    except Exception as e:
+        await mark_run_failed(run["id"], f"Failed to queue analysis: {e}")
+        raise
+    run["command_id"] = command_id
+    run["report_ids"] = [resolved_id]
+    logger.info(
+        f"Submitted single-report analysis run {run['id']} "
+        f"for report {resolved_id}"
+    )
+    return run
+
+
+# --- report-scoped actions ---------------------------------------------------
+
+
+def _parse_json_id_list(raw: Any) -> List[str]:
+    """Parse a JSON-encoded ID list from the troubleshooting DB."""
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return [str(item) for item in raw]
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [str(item) for item in parsed]
+
+
+async def _latest_completed_run() -> Optional[Dict[str, Any]]:
+    """Newest completed analysis run, or ``None`` when none exists."""
+    rows = await repo_query(
+        f"SELECT * FROM {TABLE_RUN} WHERE status = $status "
+        "ORDER BY created DESC LIMIT 1",
+        {"status": RUN_COMPLETED},
+    )
+    if not rows:
+        return None
+    return _run_row(rows[0])
+
+
+async def get_report_actions(report_id: str) -> Dict[str, Any]:
+    """Repair actions/verifications/events attributable to one report.
+
+    Read-only over the precomputed Troubleshooting Database (never mines,
+    never recomputes): rows are filtered by the report's stable
+    ``analysis_key`` prefix (``<key>-<prefix>-<number>`` record IDs) plus
+    the run-manifest row range for deterministic fallback IDs
+    (``ROW-<sheet>-<row>``). Returns separate ``repair_actions``,
+    ``verifications``, ``post_repair_events`` and ``history_only_record_ids``
+    (report records with no mined objects — history kept on the record
+    itself). Empty states carry ``warnings`` instead of inventing data:
+
+    - database missing/unreadable → ``ConfigurationError`` (422);
+    - no completed run yet → empty with ``no_completed_run``;
+    - report absent from the latest completed run → empty with
+      ``report_not_in_latest_db`` (the DB holds a different snapshot).
+    """
+    from api import troubleshooting_service
+
+    internal = await _get_report_internal(report_id)
+    resolved_id = str(internal["id"])
+    analysis_key = str(internal.get("analysis_key") or "")
+    if not analysis_key:
+        raise InvalidInputError("Repair report has no analysis key.")
+
+    db_path = troubleshooting_service.resolve_database_path()
+    if not db_path.exists():
+        raise ConfigurationError(
+            "Troubleshooting database unavailable. Generate it with the "
+            "offline batch pipeline and point TROUBLESHOOTING_DB_PATH at "
+            "the resulting SQLite file."
+        )
+
+    completed = await _latest_completed_run()
+    if completed is None:
+        return {
+            "report_id": resolved_id,
+            "analysis_key": analysis_key,
+            "run_id": None,
+            "record_ids": [],
+            "repair_actions": [],
+            "verifications": [],
+            "post_repair_events": [],
+            "history_only_record_ids": [],
+            "warnings": ["no_completed_run"],
+        }
+    run_id = str(completed["id"])
+    manifest = completed.get("manifest") or []
+    manifest_entry = next(
+        (
+            entry
+            for entry in manifest
+            if str(entry.get("report_id")) == resolved_id
+        ),
+        None,
+    )
+    in_run_ids = resolved_id in [
+        str(item) for item in completed.get("report_ids") or []
+    ]
+    if not in_run_ids and manifest_entry is None:
+        return {
+            "report_id": resolved_id,
+            "analysis_key": analysis_key,
+            "run_id": run_id,
+            "record_ids": [],
+            "repair_actions": [],
+            "verifications": [],
+            "post_repair_events": [],
+            "history_only_record_ids": [],
+            "warnings": ["report_not_in_latest_db"],
+        }
+
+    warnings: List[str] = []
+    fallback_range: Optional[tuple[int, int]] = None
+    fallback_sheet = "repair_reports"
+    if manifest_entry is not None:
+        try:
+            first = int(manifest_entry.get("first_row"))
+            last = int(manifest_entry.get("last_row"))
+            fallback_range = (first, last)
+            fallback_sheet = str(
+                manifest_entry.get("aggregate_sheet") or "repair_reports"
+            )
+        except (TypeError, ValueError):
+            fallback_range = None
+            warnings.append("manifest_range_unavailable")
+    else:
+        warnings.append("manifest_missing_for_fallback")
+
+    prefix = f"{analysis_key}-"
+
+    def _is_report_record(record_id: str) -> bool:
+        if record_id.startswith(prefix):
+            return True
+        if record_id.startswith("ROW-") and fallback_range is not None:
+            # Deterministic fallback: ROW-<sheet>-<aggregate row>.
+            tail = record_id.rsplit("-", 1)
+            if len(tail) == 2 and tail[1].isdigit():
+                row_number = int(tail[1])
+                first, last = fallback_range
+                sheet_part = record_id[len("ROW-"):][: -len(tail[1]) - 1]
+                if sheet_part == fallback_sheet and first <= row_number <= last:
+                    return True
+        return False
+
+    try:
+        connection = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    except sqlite3.Error as e:
+        raise ConfigurationError(
+            "Troubleshooting database unavailable. Generate it with the "
+            "offline batch pipeline and point TROUBLESHOOTING_DB_PATH at "
+            "the resulting SQLite file."
+        ) from e
+    try:
+        connection.row_factory = sqlite3.Row
+        try:
+            record_rows = connection.execute(
+                "SELECT record_id FROM maintenance_records"
+            ).fetchall()
+            action_rows = connection.execute("SELECT * FROM repair_actions").fetchall()
+            verification_rows = connection.execute(
+                "SELECT * FROM guide_verifications"
+            ).fetchall()
+            event_rows = connection.execute(
+                "SELECT * FROM guide_post_repair_events"
+            ).fetchall()
+        except sqlite3.Error as e:
+            raise ConfigurationError(
+                "Troubleshooting database unavailable. Generate it with the "
+                "offline batch pipeline and point TROUBLESHOOTING_DB_PATH at "
+                "the resulting SQLite file."
+            ) from e
+    finally:
+        connection.close()
+
+    report_record_ids = sorted(
+        {
+            str(row["record_id"])
+            for row in record_rows
+            if _is_report_record(str(row["record_id"]))
+        }
+    )
+    report_set = set(report_record_ids)
+
+    repair_actions: List[Dict[str, Any]] = []
+    for row in action_rows:
+        item = dict(row)
+        source_ids = _parse_json_id_list(item.get("source_record_ids_json"))
+        if not (set(source_ids) & report_set):
+            continue
+        repair_actions.append(
+            {
+                "id": item.get("id"),
+                "category": item.get("category"),
+                "role": item.get("role"),
+                "action_text": item.get("action_text"),
+                "source_record_ids": sorted(set(source_ids) & report_set),
+                "frequency": item.get("frequency"),
+            }
+        )
+    repair_actions.sort(
+        key=lambda item: (
+            -(item.get("frequency") or 0),
+            str(item.get("action_text") or ""),
+        )
+    )
+
+    verifications: List[Dict[str, Any]] = []
+    for row in verification_rows:
+        item = dict(row)
+        if str(item.get("record_id")) not in report_set:
+            continue
+        verifications.append(
+            {
+                "id": item.get("id"),
+                "record_id": item.get("record_id"),
+                "sentence": item.get("sentence"),
+                "event_type": item.get("event_type"),
+                "repair_action_id": item.get("repair_action_id"),
+            }
+        )
+    verifications.sort(key=lambda item: str(item.get("id") or ""))
+
+    events: List[Dict[str, Any]] = []
+    for row in event_rows:
+        item = dict(row)
+        if str(item.get("record_id")) not in report_set:
+            continue
+        events.append(
+            {
+                "id": item.get("id"),
+                "record_id": item.get("record_id"),
+                "sentence": item.get("sentence"),
+                "event_type": item.get("event_type"),
+                "repair_action_id": item.get("repair_action_id"),
+            }
+        )
+    events.sort(key=lambda item: str(item.get("id") or ""))
+
+    covered: set[str] = set()
+    for item in repair_actions:
+        covered.update(item.get("source_record_ids") or [])
+    for item in verifications:
+        if item.get("record_id"):
+            covered.add(str(item["record_id"]))
+    for item in events:
+        if item.get("record_id"):
+            covered.add(str(item["record_id"]))
+    history_only = sorted(rid for rid in report_record_ids if rid not in covered)
+
+    return {
+        "report_id": resolved_id,
+        "analysis_key": analysis_key,
+        "run_id": run_id,
+        "record_ids": report_record_ids,
+        "repair_actions": repair_actions,
+        "verifications": verifications,
+        "post_repair_events": events,
+        "history_only_record_ids": history_only,
+        "warnings": warnings,
+    }
 
 
 class AnalysisInProgressError(Exception):

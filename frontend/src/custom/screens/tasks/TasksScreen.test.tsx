@@ -7,7 +7,7 @@ import {
   getTaskStatusKind,
   getTaskStatusLabelKey,
 } from './task-helpers'
-import { useTasks } from '@/lib/hooks/use-tasks'
+import { useDeleteTask, useTasks } from '@/lib/hooks/use-tasks'
 import type { TaskItem } from '@/lib/api/tasks'
 
 vi.mock('@/components/layout/AppShell', () => ({
@@ -16,9 +16,11 @@ vi.mock('@/components/layout/AppShell', () => ({
 
 vi.mock('@/lib/hooks/use-tasks', () => ({
   useTasks: vi.fn(),
+  useDeleteTask: vi.fn(),
 }))
 
 const mockUseTasks = vi.mocked(useTasks)
+const mockUseDeleteTask = vi.mocked(useDeleteTask)
 
 const runningTask: TaskItem = {
   job_id: 'command:run1',
@@ -100,6 +102,10 @@ function mockQuery(overrides = {}) {
     isError: false,
     refetch: vi.fn(),
     ...overrides,
+  } as never)
+  mockUseDeleteTask.mockReturnValue({
+    mutate: vi.fn(),
+    isPending: false,
   } as never)
 }
 
@@ -187,6 +193,32 @@ describe('TasksScreen', () => {
     expect(
       screen.getByText('Stored file for report repair_report:zzz is missing.'),
     ).toBeDefined()
+  })
+
+  it('offers delete only for terminal jobs, never for active ones', () => {
+    mockQuery({ data: [runningTask, completedTask] })
+    render(<TasksScreen />)
+
+    // One delete button (completed) ; the running row shows an em dash.
+    expect(screen.getAllByRole('button', { name: 'tasks.deleteTask' })).toHaveLength(1)
+  })
+
+  it('deletes a terminal task through the confirm flow', () => {
+    const mutate = vi.fn()
+    mockUseTasks.mockReturnValue({
+      data: [failedTask],
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    } as never)
+    mockUseDeleteTask.mockReturnValue({ mutate, isPending: false } as never)
+    render(<TasksScreen />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'tasks.deleteTask' }))
+    expect(screen.getByText('tasks.deleteTaskTitle')).toBeDefined()
+    const confirmButtons = screen.getAllByRole('button', { name: 'tasks.deleteTask' })
+    fireEvent.click(confirmButtons[confirmButtons.length - 1])
+    expect(mutate).toHaveBeenCalledWith('command:fail1', expect.anything())
   })
 })
 

@@ -55,6 +55,7 @@ export const QUERY_KEYS = {
   repairReports: ['repair-reports'] as const,
   repairReport: (id: string) => ['repair-reports', id] as const,
   repairReportPreview: (id: string) => ['repair-reports', id, 'preview'] as const,
+  repairReportActions: (id: string) => ['repair-reports', id, 'actions'] as const,
   repairAnalysisRuns: ['repair-reports', 'runs'] as const,
   repairAnalysisRun: (id: string) => ['repair-reports', 'runs', id] as const,
 }

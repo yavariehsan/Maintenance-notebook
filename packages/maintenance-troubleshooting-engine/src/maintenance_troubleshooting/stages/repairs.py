@@ -101,10 +101,6 @@ _TEST_ONLY_PHRASE = "تست شد"
 _TEST_HANDOVER_SUBSTRING = "تست و تحویل"
 _OUTCOME_MARKERS = ("برطرف شد", "برطرف گردید")
 
-#: Substrings marking test+handover / outcome inside longer sentences.
-_TEST_HANDOVER_SUBSTRING = "تست و تحویل"
-_OUTCOME_MARKERS = ("برطرف شد", "برطرف گردید")
-
 
 def _tokens(text: str) -> list[str]:
     """Tokenize already-normalized text for matching.
@@ -200,11 +196,18 @@ def _vocabulary_tokens(
 ) -> dict[str, set[str]]:
     """Candidate component/parameter tokens per record (M11C D1).
 
-    Union of: the record's own equipment tree levels; official
-    text-mining aliases; terms induced from same-manufacturer repair
-    text (≥2 observations) that also occur in a same-manufacturer tree
-    or the aliases — never arbitrary repeated words. Token-aware
-    throughout; deterministic ordering.
+    Explicit precedence tiers (highest first), unioned per record:
+
+    1. own-equipment tree tokens (``trees[code]``);
+    2. official text-mining aliases (``alias_tokens``);
+    3. manufacturer-scoped induced terms (``induced``): tokens seen ≥2
+       times in same-manufacturer repair text that also occur in a
+       same-manufacturer tree or the aliases — never arbitrary
+       repeated words.
+
+    Token-aware throughout; deterministic ordering. Admission checks
+    tiers in this order (see ``_admission_tier``); the union result is
+    identical but the tier trace shows *why* a short sentence passed.
     """
     tokenizer = SimpleTokenizer()
 
@@ -255,6 +258,28 @@ def _vocabulary_tokens(
             trees.get(record.equipment_code, set()) | alias_tokens | induced
         )
     return vocab
+
+
+def _admission_tier(
+    sentence_tokens: set[str],
+    own_tree: set[str],
+    alias_tokens: set[str],
+    induced_tokens: set[str],
+) -> str | None:
+    """Which vocabulary tier admits a short sentence, if any (M11C D1).
+
+    Pure traceability helper: checks tiers in precedence order
+    (tree → alias → induced). Returns ``"tree"`` / ``"alias"`` /
+    ``"induced"`` or ``None``. The miner admits on the union, so this
+    never changes admission — it only explains it.
+    """
+    if sentence_tokens & own_tree:
+        return "tree"
+    if sentence_tokens & alias_tokens:
+        return "alias"
+    if sentence_tokens & induced_tokens:
+        return "induced"
+    return None
 
 
 class RepairActionMiner:

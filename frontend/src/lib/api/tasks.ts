@@ -35,4 +35,11 @@ export const tasksApi = {
     const response = await apiClient.get<TaskItem[]>('/tasks', { params: { limit } })
     return response.data
   },
+
+  deleteTask: async (jobId: string): Promise<{ job_id: string; deleted: boolean }> => {
+    const response = await apiClient.delete<{ job_id: string; deleted: boolean }>(
+      `/tasks/${encodeURIComponent(jobId)}`,
+    )
+    return response.data
+  },
 }

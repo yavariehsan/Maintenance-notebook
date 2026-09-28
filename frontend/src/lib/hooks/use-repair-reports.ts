@@ -60,6 +60,15 @@ export function useRepairAnalysisRuns() {
   })
 }
 
+export function useRepairReportActions(id: string) {
+  return useQuery({
+    queryKey: QUERY_KEYS.repairReportActions(id),
+    queryFn: () => repairReportsApi.getActions(id),
+    enabled: !!id,
+    staleTime: 0,
+  })
+}
+
 export function useUploadRepairReport() {
   const queryClient = useQueryClient()
   const { toast } = useToast()
@@ -96,6 +105,33 @@ export function useStartRepairAnalysis() {
       queryClient.invalidateQueries({ queryKey: QUERY_KEYS.repairAnalysisRuns })
       // Wake the Tasks page: its bounded polling is off while no job is
       // active, so a fresh analysis command would otherwise sit unseen.
+      queryClient.invalidateQueries({ queryKey: ['tasks'] })
+      toast({
+        title: t('common.success'),
+        description: t('repairReports.analyzeStarted'),
+      })
+    },
+    onError: (error: unknown) => {
+      toast({
+        title: t('common.error'),
+        description: t(getApiErrorKey(error, t('repairReports.analyzeFailed'))),
+        variant: 'destructive',
+      })
+    },
+  })
+}
+
+export function useStartSingleReportAnalysis(reportId: string) {
+  const queryClient = useQueryClient()
+  const { toast } = useToast()
+  const { t } = useTranslation()
+
+  return useMutation({
+    mutationFn: () => repairReportsApi.startSingleReportAnalysis(reportId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.repairReports })
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.repairReport(reportId) })
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.repairAnalysisRuns })
       queryClient.invalidateQueries({ queryKey: ['tasks'] })
       toast({
         title: t('common.success'),

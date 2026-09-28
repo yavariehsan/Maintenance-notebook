@@ -1001,3 +1001,186 @@ def test_chain_aggregate_engine_runtime(tmp_path, monkeypatch):
     assert any(
         rid.startswith(("11111111-", "22222222-")) for rid in evidence_ids
     ), "evidence must trace to namespaced source records"
+
+
+# --- single-report analysis + same-filename isolation (M11C-6R Part C) -----------
+
+
+@pytest.mark.asyncio
+async def test_start_single_report_analysis_queues_only_requested(client):
+    """Per-report POST snapshots one file; no implicit process-everything."""
+    updates = []
+
+    async def _repo(query, params=None):
+        if "FROM repair_analysis_run" in query:
+            return []
+        if "FROM repair_report WHERE" in query:
+            return [_report_row(id="repair_report:abc123")]
+        if query.startswith("CREATE repair_analysis_run"):
+            return [_run_row(report_ids=["repair_report:abc123"])]
+        if query.startswith("UPDATE"):
+            updates.append((query, params))
+            return []
+        raise AssertionError(f"unexpected query: {query}")
+
+    with (
+        patch.object(reports, "repo_query", new_callable=AsyncMock) as mock_repo,
+        patch(
+            "api.command_service.CommandService.submit_command_job",
+            new=AsyncMock(return_value="command:job1"),
+        ),
+    ):
+        mock_repo.side_effect = _repo
+        resp = client.post("/api/repair-reports/repair_report:abc123/analyze")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["run"]["report_ids"] == ["repair_report:abc123"]
+    queued = [
+        params
+        for query, params in updates
+        if "analysis_state" in query and params.get("state") == "queued"
+    ]
+    assert len(queued) == 1
+
+
+@pytest.mark.asyncio
+async def test_start_single_report_unknown_is_404(client):
+    async def _repo(query, params=None):
+        if "FROM repair_analysis_run" in query:
+            return []
+        if "FROM repair_report WHERE" in query:
+            return []
+        raise AssertionError(f"unexpected query: {query}")
+
+    with patch.object(reports, "repo_query", new_callable=AsyncMock) as mock_repo:
+        mock_repo.side_effect = _repo
+        resp = client.post("/api/repair-reports/repair_report:missing/analyze")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_start_single_report_completed_refuses_reprocess(client):
+    async def _repo(query, params=None):
+        if "FROM repair_analysis_run" in query:
+            return []
+        if "FROM repair_report WHERE" in query:
+            return [_report_row(analysis_state="completed")]
+        raise AssertionError(f"unexpected query: {query}")
+
+    with patch.object(reports, "repo_query", new_callable=AsyncMock) as mock_repo:
+        mock_repo.side_effect = _repo
+        resp = client.post("/api/repair-reports/repair_report:abc123/analyze")
+    assert resp.status_code == 400
+
+
+def test_same_filename_uploads_stay_isolated(tmp_path, monkeypatch):
+    """Two uploads named cmms.xlsx never share storage or analysis keys."""
+    monkeypatch.setattr(reports, "REPAIR_REPORTS_FOLDER", str(tmp_path))
+    first = reports.generate_unique_filename("cmms.xlsx")
+    Path(first).write_bytes(b"x")
+    second = reports.generate_unique_filename("cmms.xlsx")
+    assert first != second
+    assert Path(first).name != Path(second).name
+    # Analysis keys are per-file random hex, never derived from filenames.
+    assert reports._namespaced_prefix("key-one", "B") != reports._namespaced_prefix(
+        "key-two", "B"
+    )
+
+
+# --- report-scoped actions (M11C-6R Part B) -------------------------------------
+
+
+def test_report_actions_filters_by_analysis_key(tmp_path, monkeypatch):
+    """Actions/verifications/events split cleanly per analysis_key prefix."""
+
+    from maintenance_troubleshooting import EngineConfig, analyze_workbook
+
+    file_a = tmp_path / "a.xlsx"
+    file_b = tmp_path / "b.xlsx"
+    file_a.write_bytes(_workbook_bytes(_sample_rows(prefix="B", start=1, count=2)))
+    file_b.write_bytes(_workbook_bytes(_sample_rows(prefix="M", start=1, count=2)))
+    dest = tmp_path / "aggregate.xlsx"
+    manifest = reports.build_aggregate_workbook(
+        [
+            {
+                "report_id": "repair_report:aaa",
+                "filename": "a.xlsx",
+                "analysis_key": "11111111",
+                "path": str(file_a),
+            },
+            {
+                "report_id": "repair_report:bbb",
+                "filename": "b.xlsx",
+                "analysis_key": "22222222",
+                "path": str(file_b),
+            },
+        ],
+        dest,
+    )
+    db_path = tmp_path / "knowledge.db"
+    analyze_workbook(dest, configuration=EngineConfig.default(), output_path=db_path)
+
+    completed_run = _run_row(
+        id="repair_analysis_run:done",
+        status="completed",
+        report_ids=["repair_report:aaa", "repair_report:bbb"],
+        manifest=manifest,
+    )
+
+    async def _repo(query, params=None):
+        if "FROM repair_report WHERE" in query:
+            rid = str((params or {}).get("rid", ""))
+            if "aaa" in rid:
+                return [_report_row(id="repair_report:aaa", analysis_key="11111111")]
+            return [_report_row(id="repair_report:bbb", analysis_key="22222222")]
+        if "status = " in query and "repair_analysis_run" in query:
+            return [completed_run]
+        raise AssertionError(f"unexpected query: {query}")
+
+    async def _run():
+        with (
+            patch.object(reports, "repo_query", new_callable=AsyncMock) as mock_repo,
+            patch(
+                "api.troubleshooting_service.resolve_database_path",
+                return_value=db_path,
+            ),
+        ):
+            mock_repo.side_effect = _repo
+            actions_a = await reports.get_report_actions("repair_report:aaa")
+            actions_b = await reports.get_report_actions("repair_report:bbb")
+        return actions_a, actions_b
+
+    import asyncio
+
+    actions_a, actions_b = asyncio.run(_run())
+    assert actions_a["analysis_key"] == "11111111"
+    assert actions_b["analysis_key"] == "22222222"
+    assert actions_a["run_id"] == "repair_analysis_run:done"
+    # Record sets are disjoint and namespaced; nothing invented.
+    assert actions_a["record_ids"]
+    assert actions_b["record_ids"]
+    assert not (set(actions_a["record_ids"]) & set(actions_b["record_ids"]))
+    assert all(rid.startswith("11111111-") for rid in actions_a["record_ids"])
+    assert all(rid.startswith("22222222-") for rid in actions_b["record_ids"])
+    # Every returned object points at this report's records only.
+    for payload in (actions_a, actions_b):
+        allowed = set(payload["record_ids"])
+        for action in payload["repair_actions"]:
+            assert set(action["source_record_ids"]) <= allowed
+        for item in payload["verifications"] + payload["post_repair_events"]:
+            assert item["record_id"] in allowed
+        for rid in payload["history_only_record_ids"]:
+            assert rid in allowed
+
+
+@pytest.mark.asyncio
+async def test_report_actions_unknown_report_is_404(client):
+    async def _repo(query, params=None):
+        if "FROM repair_report WHERE" in query:
+            return []
+        raise AssertionError(f"unexpected query: {query}")
+
+    with patch.object(reports, "repo_query", new_callable=AsyncMock) as mock_repo:
+        mock_repo.side_effect = _repo
+        resp = client.get("/api/repair-reports/repair_report:missing/actions")
+    assert resp.status_code == 404

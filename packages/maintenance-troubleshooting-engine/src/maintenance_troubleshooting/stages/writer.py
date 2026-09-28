@@ -561,6 +561,21 @@ class OutputDatabaseWriter:
                 (action.equipment_code, action.failure_mode_id, action.action_text),
                 action,
             )
+        # Traceable scope counts (M11C §2 bundle): how many mined actions,
+        # verifications and handover/outcome events support this scope.
+        # Counts only — no invented steps, no imperative synthesis.
+        action_counts: dict[tuple[str, str], int] = {}
+        for action in context.repair_actions:
+            key = (action.equipment_code, action.failure_mode_id)
+            action_counts[key] = action_counts.get(key, 0) + 1
+        verification_counts: dict[tuple[str, str], int] = {}
+        for item in context.technical_verifications:
+            key = (item.equipment_code, item.failure_mode_id)
+            verification_counts[key] = verification_counts.get(key, 0) + 1
+        event_counts: dict[tuple[str, str], int] = {}
+        for item in context.post_repair_events:
+            key = (item.equipment_code, item.failure_mode_id)
+            event_counts[key] = event_counts.get(key, 0) + 1
         position = 0
         rows: list[tuple[Any, ...]] = []
         for guide in sorted(
@@ -625,7 +640,15 @@ class OutputDatabaseWriter:
                     equipment_code, mode_id, "method",
                     "How these numbers were produced", position,
                     f"Support percentages are shares of similarity-weighted "
-                    f"evidence ({guide.probability_semantics})",
+                    f"evidence ({guide.probability_semantics}). "
+                    f"Traceable scope bundle: "
+                    f"{action_counts.get((equipment_code, mode_id), 0)} repair "
+                    f"actions, "
+                    f"{verification_counts.get((equipment_code, mode_id), 0)} "
+                    f"verifications, "
+                    f"{event_counts.get((equipment_code, mode_id), 0)} "
+                    f"handover/outcome events — all pointing at verbatim "
+                    f"historical sentences, nothing invented.",
                 )
             )
             position += 1

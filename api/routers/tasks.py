@@ -1,10 +1,16 @@
 from typing import List, Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 from loguru import logger
 from pydantic import BaseModel, Field
 
+from open_notebook.exceptions import NotFoundError
+
 router = APIRouter()
+
+
+class TaskActiveError(Exception):
+    """A task-record deletion was requested while the job is still active."""
 
 
 class TaskItem(BaseModel):
@@ -251,3 +257,65 @@ async def _repair_analysis_tasks(limit: int) -> List[TaskItem]:
             )
         )
     return items
+
+
+class TaskDeleteResult(BaseModel):
+    """Acknowledgement for a task-record deletion (command row only)."""
+
+    job_id: str = Field(..., description="Deleted command/job ID")
+    deleted: bool = Field(..., description="Always true on success")
+
+
+@router.delete("/tasks/{job_id}", response_model=TaskDeleteResult)
+async def delete_task(job_id: str):
+    """Delete a terminal background-job record (Tasks page housekeeping).
+
+    Removes the surreal-commands ``command`` row only — never source
+    files, repair reports, analysis runs, or the generated knowledge
+    database. Only terminal jobs (``completed`` | ``failed`` |
+    ``canceled``) may be deleted; active (``new`` | ``running``) jobs
+    get 409 so a live worker run can never be orphaned. 404 for unknown
+    job IDs.
+    """
+    from open_notebook.database.repository import (
+        ensure_record_id,
+        repo_delete,
+        repo_query,
+    )
+
+    try:
+        try:
+            record_id = ensure_record_id(job_id)
+        except Exception:
+            raise NotFoundError(f"Unknown task: {job_id}.")
+        try:
+            rows = await repo_query(
+                "SELECT * FROM command WHERE id = $cid",
+                {"cid": record_id},
+            )
+        except Exception as e:
+            logger.error(f"Failed to read task {job_id}: {e}")
+            raise HTTPException(status_code=500, detail="Error deleting task")
+        if not rows:
+            raise NotFoundError(f"Unknown task: {job_id}.")
+        status = str((rows[0] or {}).get("status") or "unknown")
+        if status in ("new", "running"):
+            raise TaskActiveError(
+                "This task is still active; wait for it to finish "
+                "or cancel it before deleting."
+            )
+        try:
+            await repo_delete(record_id)
+        except Exception as e:
+            logger.error(f"Failed to delete task {job_id}: {e}")
+            raise HTTPException(status_code=500, detail="Error deleting task")
+        return TaskDeleteResult(job_id=str((rows[0] or {}).get("id") or job_id), deleted=True)
+    except NotFoundError:
+        raise
+    except TaskActiveError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting task {job_id}: {e}")
+        raise HTTPException(status_code=500, detail="Error deleting task")

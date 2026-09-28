@@ -4,8 +4,10 @@ Thin routes over ``api/repair_report_service.py``:
 
 - upload / list / detail of raw repair-history workbooks
 - 10-row workbook preview (generated safely with openpyxl, no engine)
-- collection-wide analysis runs (background worker + engine)
+- collection-wide + single-report analysis runs (background worker + engine)
 - analysis-run history
+- report-scoped actions (repair actions / verifications / events filtered
+  by the report's stable analysis key — read-only, never invented)
 
 The runtime Troubleshooting Database itself stays behind the existing
 read-only ``/api/troubleshooting/*`` endpoints — nothing here exposes
@@ -96,6 +98,69 @@ class PreviewResponse(BaseModel):
 class StartAnalysisResponse(BaseModel):
     run: AnalysisRunItem
     message: str = Field(..., description="Human-readable acknowledgement")
+
+
+class ReportActionItem(BaseModel):
+    """One repair action attributable to this report (read-only)."""
+
+    id: Optional[str] = Field(None, description="Action ID")
+    category: Optional[str] = Field(None, description="Action taxonomy category")
+    role: Optional[str] = Field(
+        None, description="diagnostic | corrective | verification | observed_issue"
+    )
+    action_text: Optional[str] = Field(None, description="Original repair sentence")
+    source_record_ids: List[str] = Field(
+        default_factory=list, description="This report's supporting record IDs"
+    )
+    frequency: Optional[int] = Field(None, description="Supporting record count")
+
+
+class ReportVerificationItem(BaseModel):
+    """One verification step attested in this report's sentences."""
+
+    id: Optional[str] = Field(None, description="Verification ID")
+    record_id: Optional[str] = Field(None, description="Source record ID")
+    sentence: Optional[str] = Field(None, description="Verbatim source sentence")
+    event_type: Optional[str] = Field(None, description="test | outcome")
+    repair_action_id: Optional[str] = Field(
+        None, description="Linked repair action, when mixed"
+    )
+
+
+class ReportEventItem(BaseModel):
+    """One handover/outcome event attested in this report's sentences."""
+
+    id: Optional[str] = Field(None, description="Event ID")
+    record_id: Optional[str] = Field(None, description="Source record ID")
+    sentence: Optional[str] = Field(None, description="Verbatim source sentence")
+    event_type: Optional[str] = Field(None, description="handover | outcome")
+    repair_action_id: Optional[str] = Field(
+        None, description="Linked repair action, when mixed"
+    )
+
+
+class ReportActionsResponse(BaseModel):
+    """Report-scoped troubleshooting objects (never invented)."""
+
+    report_id: str = Field(..., description="Stable report identifier")
+    analysis_key: str = Field(..., description="Per-file namespacing key")
+    run_id: Optional[str] = Field(
+        None, description="Latest completed run backing the database"
+    )
+    record_ids: List[str] = Field(
+        default_factory=list, description="This report's record IDs in the database"
+    )
+    repair_actions: List[ReportActionItem] = Field(default_factory=list)
+    verifications: List[ReportVerificationItem] = Field(default_factory=list)
+    post_repair_events: List[ReportEventItem] = Field(default_factory=list)
+    history_only_record_ids: List[str] = Field(
+        default_factory=list,
+        description="Records with no mined objects (history on the record)",
+    )
+    warnings: List[str] = Field(
+        default_factory=list,
+        description="Empty-state reasons, e.g. report_not_in_latest_db",
+    )
 
 
 @router.post("/repair-reports", response_model=RepairReportItem, status_code=201)
@@ -229,6 +294,10 @@ async def start_repair_analysis():
     report, so new files add knowledge without discarding previous work.
     Returns 409 while another run is active — only one
     knowledge-generation operation may replace the runtime database.
+
+    Kept for backward compatibility; prefer
+    ``POST /repair-reports/{id}/analyze`` for single-report runs with no
+    implicit process-everything.
     """
     try:
         run = await reports.start_analysis()
@@ -245,3 +314,65 @@ async def start_repair_analysis():
         run=AnalysisRunItem(**run),
         message="Analysis started. The troubleshooting guide updates when it completes.",
     )
+
+
+@router.post(
+    "/repair-reports/{report_id}/analyze", response_model=StartAnalysisResponse
+)
+async def start_single_report_analysis(report_id: str):
+    """Start a single-report analysis run (تحلیل محتوا for one file).
+
+    The run snapshots exactly this report — the generated database
+    represents this file alone (atomic single-writer replacement). Only
+    ``not_analyzed`` and ``failed`` reports may start (no
+    force-reprocess of ``completed``); 404 for unknown reports, 409
+    while any run is active.
+    """
+    try:
+        run = await reports.start_analysis_for_report(report_id)
+    except reports.AnalysisInProgressError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except NotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except InvalidInputError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error starting single-report analysis: {e}")
+        raise HTTPException(
+            status_code=500, detail="Error starting repair analysis"
+        )
+    return StartAnalysisResponse(
+        run=AnalysisRunItem(**run),
+        message="Analysis started. The troubleshooting guide updates when it completes.",
+    )
+
+
+@router.get(
+    "/repair-reports/{report_id}/actions", response_model=ReportActionsResponse
+)
+async def get_report_actions(report_id: str):
+    """Repair actions/verifications/events attributable to one report.
+
+    Read-only over the precomputed Troubleshooting Database, filtered by
+    the report's stable ``analysis_key`` (plus manifest row ranges for
+    fallback IDs). Separate ``repair_actions`` / ``verifications`` /
+    ``post_repair_events`` / ``history_only_record_ids`` lists; empty
+    states carry ``warnings`` instead of invented data. 404 for unknown
+    reports, 422 when the database is unavailable.
+    """
+    from open_notebook.exceptions import ConfigurationError
+
+    try:
+        payload = await reports.get_report_actions(report_id)
+    except NotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ConfigurationError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except InvalidInputError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error reading report actions: {e}")
+        raise HTTPException(
+            status_code=500, detail="Error reading report actions"
+        )
+    return ReportActionsResponse(**payload)

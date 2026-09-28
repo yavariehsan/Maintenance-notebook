@@ -82,6 +82,43 @@ export interface StartAnalysisResult {
   message: string
 }
 
+export interface ReportRepairAction {
+  id: string | null
+  category: string | null
+  role: string | null
+  action_text: string | null
+  source_record_ids: string[]
+  frequency: number | null
+}
+
+export interface ReportVerification {
+  id: string | null
+  record_id: string | null
+  sentence: string | null
+  event_type: string | null
+  repair_action_id: string | null
+}
+
+export interface ReportPostRepairEvent {
+  id: string | null
+  record_id: string | null
+  sentence: string | null
+  event_type: string | null
+  repair_action_id: string | null
+}
+
+export interface ReportActions {
+  report_id: string
+  analysis_key: string
+  run_id: string | null
+  record_ids: string[]
+  repair_actions: ReportRepairAction[]
+  verifications: ReportVerification[]
+  post_repair_events: ReportPostRepairEvent[]
+  history_only_record_ids: string[]
+  warnings: string[]
+}
+
 /** Reports whose analysis state may still change (keep polling). */
 export function isActiveRepairReport(report: RepairReport): boolean {
   return report.analysis_state === 'queued' || report.analysis_state === 'processing'
@@ -116,6 +153,16 @@ export const repairReportsApi = {
 
   startAnalysis: async (): Promise<StartAnalysisResult> => {
     const response = await apiClient.post<StartAnalysisResult>('/repair-reports/analyze')
+    return response.data
+  },
+
+  startSingleReportAnalysis: async (id: string): Promise<StartAnalysisResult> => {
+    const response = await apiClient.post<StartAnalysisResult>(`${reportPath(id)}/analyze`)
+    return response.data
+  },
+
+  getActions: async (id: string): Promise<ReportActions> => {
+    const response = await apiClient.get<ReportActions>(`${reportPath(id)}/actions`)
     return response.data
   },
 

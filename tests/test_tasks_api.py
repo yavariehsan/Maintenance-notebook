@@ -4,6 +4,9 @@ The endpoint exposes the persisted surreal-commands `command` records for
 embed_source jobs plus the real per-batch progress the worker writes back.
 Progress must be derived from worker state only: percentage is
 processed/total*100 when a total is known, otherwise null (indeterminate).
+
+DELETE /api/tasks/{job_id} removes only the command row (never files,
+reports, runs, or the knowledge database) and only for terminal jobs.
 """
 
 from unittest.mock import AsyncMock, patch
@@ -135,3 +138,50 @@ async def test_tasks_completed_and_failed(mock_repo, client):
     assert failed["status"] == "failed"
     assert failed["source_title"] is None
     assert failed["error_message"] == "boom"
+
+
+# --- DELETE /api/tasks/{job_id} (M11C-6R Part D) -------------------------------
+
+
+def _delete_repo_factory(command_row):
+    async def _repo(query, params=None):
+        if query.startswith("SELECT * FROM command"):
+            return [command_row] if command_row is not None else []
+        raise AssertionError(f"unexpected query: {query}")
+
+    return _repo
+
+
+@pytest.mark.asyncio
+@patch("open_notebook.database.repository.repo_query", new_callable=AsyncMock)
+@patch("open_notebook.database.repository.repo_delete", new_callable=AsyncMock)
+async def test_delete_terminal_task_removes_command_only(
+    mock_delete, mock_repo, client
+):
+    """Completed jobs delete the command row; nothing else is touched."""
+    mock_repo.side_effect = _delete_repo_factory(_cmd(id="command:done", status="completed"))
+    resp = client.delete("/api/tasks/command:done")
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"job_id": "command:done", "deleted": True}
+    assert mock_delete.await_count == 1
+
+
+@pytest.mark.asyncio
+@patch("open_notebook.database.repository.repo_query", new_callable=AsyncMock)
+@patch("open_notebook.database.repository.repo_delete", new_callable=AsyncMock)
+async def test_delete_active_task_conflicts(mock_delete, mock_repo, client):
+    """Running jobs cannot be deleted (409); the row is preserved."""
+    mock_repo.side_effect = _delete_repo_factory(_cmd(id="command:run", status="running"))
+    resp = client.delete("/api/tasks/command:run")
+    assert resp.status_code == 409
+    assert mock_delete.await_count == 0
+
+
+@pytest.mark.asyncio
+@patch("open_notebook.database.repository.repo_query", new_callable=AsyncMock)
+@patch("open_notebook.database.repository.repo_delete", new_callable=AsyncMock)
+async def test_delete_unknown_task_not_found(mock_delete, mock_repo, client):
+    mock_repo.side_effect = _delete_repo_factory(None)
+    resp = client.delete("/api/tasks/command:missing")
+    assert resp.status_code == 404
+    assert mock_delete.await_count == 0

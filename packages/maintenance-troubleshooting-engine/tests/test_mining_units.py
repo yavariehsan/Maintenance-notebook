@@ -347,6 +347,65 @@ def test_zwnj_spacing_equivalence() -> None:
     assert classify_sentence("پمپ تست می شود") is ActionCategory.TEST
 
 
+def test_zwnj_miner_admission_equivalence() -> None:
+    """M11C D6: ZWNJ variants behave identically through the miner."""
+    from maintenance_troubleshooting.stages.repairs import _tokens
+
+    assert _tokens("می‌شود") == _tokens("می شود")
+    # Short component-bearing sentences admit regardless of ZWNJ form;
+    # the admitted text is the verbatim original (no silent rewrite).
+    admitted_zwnj = _miner_run(
+        [
+            {
+                "id": "R-1",
+                "repair": "تعمیر پمپ می‌شود",
+                "tree": TechnicalTree(t3="پمپ هیدرولیک"),
+            }
+        ]
+    )
+    admitted_spaced = _miner_run(
+        [
+            {
+                "id": "R-1",
+                "repair": "تعمیر پمپ می شود",
+                "tree": TechnicalTree(t3="پمپ هیدرولیک"),
+            }
+        ]
+    )
+    assert [a.action_text for a in admitted_zwnj.repair_actions] == ["تعمیر پمپ می‌شود"]
+    assert [a.action_text for a in admitted_spaced.repair_actions] == ["تعمیر پمپ می شود"]
+
+
+def test_leading_waw_stripped_for_matching() -> None:
+    """M11C D6: attached `و` conjunction never blocks a keyword match."""
+    from maintenance_troubleshooting.stages.repairs import _token_matches
+
+    assert _token_matches("تعویض", ["وتعویض"])
+    # A token that already is a keyword still matches exactly first.
+    assert _token_matches("وصل", ["وصل"])
+    assert classify_sentence("وتعویض قطعه انجام شد") is ActionCategory.REPLACE
+
+
+def test_ascii_inflection_only_for_latin_keywords() -> None:
+    """M11C D6: `checked`→`check`, but Persian forms never stem."""
+    from maintenance_troubleshooting.stages.repairs import _token_matches
+
+    assert _token_matches("check", ["checked"])
+    assert _token_matches("check", ["checks"])
+    assert not _token_matches("قطع", ["قطعه"])
+    assert not _token_matches("تست", ["تستها"])
+
+
+def test_admission_tier_precedence() -> None:
+    """M11C D1: tree → alias → induced precedence is explicit."""
+    from maintenance_troubleshooting.stages.repairs import _admission_tier
+
+    assert _admission_tier({"پمپ"}, {"پمپ"}, {"دیگر"}, set()) == "tree"
+    assert _admission_tier({"پمپ"}, set(), {"پمپ"}, {"پمپ"}) == "alias"
+    assert _admission_tier({"پمپ"}, set(), set(), {"پمپ"}) == "induced"
+    assert _admission_tier({"غریب"}, set(), set(), set()) is None
+
+
 def test_guide_bundle_traceability() -> None:
     """M11C §2: procedure bundle is traceable; nothing invented."""
     sentence = "تعویض پالت انجام نمیشد که سوئیچ تنظیم و تست و تحویل گردید"

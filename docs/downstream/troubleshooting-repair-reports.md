@@ -43,27 +43,41 @@ pipeline → M3 validation → M4 read-only runtime → M5 frontend data layer).
   strip, traversal guard — same conventions as `uploads/`). One
   `repair_report` SurrealDB record per file: filename, size, worksheet,
   column/data-row counts, a stable 8-hex `analysis_key`, and the
-  analysis state. Filesystem paths never reach the browser.
+  analysis state. Filesystem paths never reach the browser. Same
+  filenames never collide: the stored name is unique per upload and the
+  `analysis_key` is per-file random hex (never derived from filenames).
 - **محتوا tab.** Column names + up to 10 non-empty data rows, generated
   with read-only openpyxl directly from the stored workbook. The engine
   never runs for previews.
-- **تحلیل tab.** `تحلیل محتوا` starts a collection-wide analysis run;
-  enabled for `not_analyzed` (and `failed`, as the retry), disabled for
+- **تحلیل tab.** `تحلیل محتوا` starts a **single-report** analysis run
+  (`POST /repair-reports/{id}/analyze`); enabled for `not_analyzed`
+  (and `failed`, as the retry), disabled for
   `queued`/`processing`/`completed`. No force-reprocess action exists.
+  The tab also shows the report-scoped repair actions mined from this
+  file alone (actions / verifications / handover-outcome events /
+  history-only records — every item points at a verbatim sentence).
+  The legacy collection-wide `POST /repair-reports/analyze` is kept for
+  backward compatibility only.
 
 ## Analysis lifecycle
 
 States per report: `not_analyzed → queued → processing → completed |
-failed`. Runs (`repair_analysis_run`) snapshot the **entire collection**:
-every run regenerates the runtime database from all uploaded reports,
-so a new file adds knowledge without discarding previous work.
+failed`. Single-report runs (`repair_analysis_run` with a singleton
+`report_ids`) snapshot **exactly one file**: the generated database
+represents that report alone (atomic single-writer replacement — the
+previous valid database stays live until the new one validates). No
+implicit process-everything: only the requested report is queued.
 
-Flow: `POST /api/repair-reports/analyze` → run record (`queued`) →
+Flow: `POST /api/repair-reports/{id}/analyze` → run record (`queued`,
+singleton `report_ids`) →
 surreal-commands job `analyze_repair_reports` → worker builds the
-aggregate workbook, runs `analyze_workbook(..., output_path=<runtime
-DB>)`, marks run + reports `completed`. The engine's writer (tmp DB →
-integrity validation → `os.replace`) keeps runtime readers on either
-the previous or the new valid database — never a partial one.
+single-file aggregate workbook, runs `analyze_workbook(...,
+output_path=<runtime DB>)`, marks run + report `completed`. The
+engine's writer (tmp DB → integrity validation → `os.replace`) keeps
+runtime readers on either the previous or the new valid database —
+never a partial one. The run manifest records the file's aggregate row
+range so deterministic fallback IDs (`ROW-<sheet>-<row>`) stay
+traceable to `report → worksheet → row`.
 
 **Concurrency.** The API returns 409 while a run is active, and the
 worker re-checks at start (a late duplicate fails transiently and
@@ -129,8 +143,15 @@ Concept model (do not conflate):
 `POST /repair-reports` · `GET /repair-reports` ·
 `GET /repair-reports/{id}` (+ latest run) ·
 `GET /repair-reports/{id}/preview` ·
-`POST /repair-reports/analyze` (409 when busy) ·
-`GET /repair-reports/runs[/{id}]`.
+`POST /repair-reports/{id}/analyze` (409 when busy, 404 unknown, 400
+already completed) ·
+`GET /repair-reports/{id}/actions` (report-scoped repair actions /
+verifications / handover-outcome events / history-only records, 422
+when the database is unavailable) ·
+`POST /repair-reports/analyze` (legacy collection-wide, 409 when busy) ·
+`GET /repair-reports/runs[/{id}]` ·
+`DELETE /tasks/{job_id}` (terminal command rows only — never files,
+reports, runs, or knowledge; 409 while active, 404 unknown).
 
 ## Tests
 
@@ -177,14 +198,17 @@ on the same truth; starting analysis additionally wakes the Tasks
 cache, and observing completion on a report detail refreshes the
 troubleshooting guide caches.
 
-Rules: starting analysis marks every included report `queued`
+Rules: starting analysis marks the included report `queued`
 immediately (both screens converge through bounded 2s polling; the
 Tasks page wakes via cache invalidation at submit). A `failed` run
 keeps previously-`completed` reports `completed` (the runtime DB still
 holds their knowledge); only reports that never contributed become
 `failed`. A second POST while a run is active gets 409 — including
 inside the submit grace window (5 min), so a duplicate run can never
-interleave state writes. Worker liveness comes from heartbeats written
+interleave state writes. A `completed` report cannot be re-analyzed
+(no force-reprocess). Task-record deletion (`DELETE /tasks/{id}`)
+removes only the terminal command row; active jobs get 409, and files,
+reports, runs, and the knowledge database are never touched. Worker liveness comes from heartbeats written
 to the command record during engine execution; a `running` command
 without liveness for 30 min is declared orphaned, its run finalized as
 failed, and its command row flipped to `failed` (a restarted worker

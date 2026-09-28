@@ -44,16 +44,20 @@ describe('repairReportsApi endpoints', () => {
     await repairReportsApi.get('repair_report:abc')
     await repairReportsApi.preview('repair_report:abc')
     await repairReportsApi.startAnalysis()
+    await repairReportsApi.startSingleReportAnalysis('repair_report:abc')
+    await repairReportsApi.getActions('repair_report:abc')
     await repairReportsApi.listRuns()
 
     expect(getMock.mock.calls.map((call) => call[0])).toEqual([
       '/repair-reports',
       '/repair-reports/repair_report%3Aabc',
       '/repair-reports/repair_report%3Aabc/preview',
+      '/repair-reports/repair_report%3Aabc/actions',
       '/repair-reports/runs',
     ])
     expect(postMock.mock.calls.map((call) => call[0])).toEqual([
       '/repair-reports/analyze',
+      '/repair-reports/repair_report%3Aabc/analyze',
     ])
   })
 
@@ -79,6 +83,11 @@ describe('repairReportsApi endpoints', () => {
       'repair-reports',
       'repair_report:abc',
       'preview',
+    ])
+    expect(QUERY_KEYS.repairReportActions('repair_report:abc')).toEqual([
+      'repair-reports',
+      'repair_report:abc',
+      'actions',
     ])
     expect(QUERY_KEYS.repairAnalysisRuns).toEqual(['repair-reports', 'runs'])
   })

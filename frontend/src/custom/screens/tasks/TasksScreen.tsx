@@ -1,6 +1,6 @@
 'use client'
 
-import { Fragment } from 'react'
+import { Fragment, useState } from 'react'
 
 import { AppShell } from '@/components/layout/AppShell'
 import { Button } from '@/components/ui/button'
@@ -9,8 +9,18 @@ import { Progress } from '@/components/ui/progress'
 import { EmptyState } from '@/components/common/EmptyState'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
-import { AlertCircle, ListTodo, RefreshCw } from 'lucide-react'
-import { useTasks } from '@/lib/hooks/use-tasks'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
+import { AlertCircle, ListTodo, RefreshCw, Trash2 } from 'lucide-react'
+import { useDeleteTask, useTasks } from '@/lib/hooks/use-tasks'
 import { useTranslation } from '@/lib/hooks/use-translation'
 import { isActiveTask, type TaskItem } from '@/lib/api/tasks'
 import {
@@ -25,6 +35,8 @@ import {
  * Downstream Tasks screen. Shows background embedding jobs submitted via
  * "Embed Content" with real worker-reported progress (processed/total
  * chunks). Polling is bounded: it runs only while a job is active.
+ * Terminal job records can be deleted (command row only — never files,
+ * reports, or knowledge) through an explicit confirm dialog.
  */
 function TaskDetail({ label, value }: { label: string; value?: string | null }) {
   return (
@@ -62,6 +74,8 @@ function TaskProgressCell({ task }: { task: TaskItem }) {
 export function TasksScreen() {
   const { t } = useTranslation()
   const { data: tasks, isLoading, isError, refetch } = useTasks()
+  const deleteMutation = useDeleteTask()
+  const [pendingDelete, setPendingDelete] = useState<TaskItem | null>(null)
 
   const renderContent = () => {
     if (isLoading) {
@@ -105,13 +119,14 @@ export function TasksScreen() {
 
     return (
       <div className="rounded-md border border-[var(--custom-border)] bg-[var(--custom-surface)] overflow-auto">
-        <table className="w-full min-w-[880px] outline-none table-fixed">
+        <table className="w-full min-w-[960px] outline-none table-fixed">
           <colgroup>
             <col className="w-auto" />
             <col className="w-[130px]" />
             <col className="w-[210px]" />
             <col className="w-[110px]" />
             <col className="w-[180px] hidden md:table-column" />
+            <col className="w-[90px]" />
           </colgroup>
           <thead className="sticky top-0 bg-background z-10">
             <tr className="border-b">
@@ -130,11 +145,15 @@ export function TasksScreen() {
               <th className="h-12 px-4 text-start align-middle font-medium text-muted-foreground hidden md:table-cell">
                 {t('tasks.lastUpdate')}
               </th>
+              <th className="h-12 px-4 text-start align-middle font-medium text-muted-foreground">
+                {t('tasks.actionsColumn')}
+              </th>
             </tr>
           </thead>
           <tbody>
             {tasks.map((task) => {
               const kind = getTaskStatusKind(task.status)
+              const deletable = !isActiveTask(task)
               return (
                 <Fragment key={task.job_id}>
                   <tr className="border-b transition-colors hover:bg-[var(--surface-raised)]">
@@ -171,10 +190,25 @@ export function TasksScreen() {
                     <td className="h-12 px-4 text-sm text-muted-foreground truncate hidden md:table-cell">
                       {formatTaskTime(task.updated_at || task.updated || task.started_at)}
                     </td>
+                    <td className="h-12 px-4">
+                      {deletable ? (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setPendingDelete(task)}
+                          disabled={deleteMutation.isPending}
+                          aria-label={t('tasks.deleteTask')}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      ) : (
+                        <span className="text-sm text-muted-foreground">—</span>
+                      )}
+                    </td>
                   </tr>
                   {task.status === 'failed' && task.error_message ? (
                     <tr className="border-b bg-[var(--surface-raised)]">
-                      <td colSpan={5} className="px-4 py-3">
+                      <td colSpan={6} className="px-4 py-3">
                         <dl className="grid grid-cols-2 sm:grid-cols-3 gap-x-6 gap-y-2 text-sm">
                           <TaskDetail label={t('tasks.error')} value={task.error_message} />
                           <TaskDetail label={t('tasks.started')} value={formatTaskTime(task.started_at)} />
@@ -213,6 +247,33 @@ export function TasksScreen() {
           {renderContent()}
         </div>
       </div>
+      <AlertDialog open={pendingDelete !== null} onOpenChange={(open) => { if (!open) setPendingDelete(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t('tasks.deleteTaskTitle')}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t('tasks.deleteTaskDescription')}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleteMutation.isPending}>
+              {t('common.cancel')}
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={deleteMutation.isPending}
+              onClick={() => {
+                if (pendingDelete) {
+                  deleteMutation.mutate(pendingDelete.job_id, {
+                    onSuccess: () => setPendingDelete(null),
+                  })
+                }
+              }}
+            >
+              {t('tasks.deleteTask')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </AppShell>
   )
 }

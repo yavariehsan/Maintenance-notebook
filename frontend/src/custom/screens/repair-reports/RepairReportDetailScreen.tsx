@@ -16,8 +16,9 @@ import { LoadingSpinner } from '@/components/common/LoadingSpinner'
 import { AlertCircle, ArrowLeft, FileSpreadsheet, RefreshCw } from 'lucide-react'
 import {
   useRepairReport,
+  useRepairReportActions,
   useRepairReportPreview,
-  useStartRepairAnalysis,
+  useStartSingleReportAnalysis,
 } from '@/lib/hooks/use-repair-reports'
 import { useTranslation } from '@/lib/hooks/use-translation'
 import type { RepairReport } from '@/lib/api/repair-reports'
@@ -25,8 +26,10 @@ import type { RepairReport } from '@/lib/api/repair-reports'
 /**
  * Downstream repair-report detail: exactly two tabs — محتوا (10-row
  * preview of the uploaded workbook, never the engine) and تحلیل (the
- * تحلیل محتوا control surface). Reuses the sources-detail tab/table
- * conventions with no extra sections.
+ * per-report تحلیل محتوا control surface plus the report-scoped repair
+ * actions mined from this file alone). Reuses the sources-detail tab/table
+ * conventions and the troubleshooting guide's action rendering primitives
+ * (badges, role/frequency, record refs) with no new scoring.
  */
 function statusLabelKey(state: RepairReport['analysis_state']): string {
   switch (state) {
@@ -82,7 +85,13 @@ export function RepairReportDetailScreen({ reportId }: { reportId: string }) {
     isError: previewError,
     refetch: refetchPreview,
   } = useRepairReportPreview(reportId)
-  const analyzeMutation = useStartRepairAnalysis()
+  const analyzeMutation = useStartSingleReportAnalysis(reportId)
+  const {
+    data: actions,
+    isLoading: actionsLoading,
+    isError: actionsError,
+    refetch: refetchActions,
+  } = useRepairReportActions(reportId)
 
   const report = detail?.report ?? null
   const analysisState = report?.analysis_state ?? null
@@ -91,8 +100,8 @@ export function RepairReportDetailScreen({ reportId }: { reportId: string }) {
 
   // When polling observes the run reaching a terminal state, refresh the
   // dependent caches once: the troubleshooting guide data (a new database
-  // may have landed) and the reports list. Transient states keep polling
-  // quietly without extra invalidation traffic.
+  // may have landed), the report-scoped actions, and the reports list.
+  // Transient states keep polling quietly without extra invalidation traffic.
   const previousState = useRef<string | null>(null)
   useEffect(() => {
     const wasActive =
@@ -101,9 +110,10 @@ export function RepairReportDetailScreen({ reportId }: { reportId: string }) {
     if (wasActive && isTerminal) {
       queryClient.invalidateQueries({ queryKey: ['troubleshooting'] })
       queryClient.invalidateQueries({ queryKey: QUERY_KEYS.repairReports })
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.repairReportActions(reportId) })
     }
     previousState.current = analysisState
-  }, [analysisState, queryClient])
+  }, [analysisState, queryClient, reportId])
 
   const renderPreview = () => {
     if (previewLoading) {
@@ -184,6 +194,177 @@ export function RepairReportDetailScreen({ reportId }: { reportId: string }) {
     )
   }
 
+  const renderActions = () => {
+    if (actionsLoading) {
+      return (
+        <div className="flex items-center justify-center py-8">
+          <LoadingSpinner size="lg" />
+        </div>
+      )
+    }
+    if (actionsError || !actions) {
+      return (
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertTitle>{t('common.error')}</AlertTitle>
+          <AlertDescription className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <span>{t('repairReports.actionsLoadFailed')}</span>
+            <Button variant="outline" size="sm" onClick={() => refetchActions()} className="shrink-0">
+              <RefreshCw className="h-4 w-4 me-2" />
+              {t('common.refresh')}
+            </Button>
+          </AlertDescription>
+        </Alert>
+      )
+    }
+    const hasObjects =
+      actions.repair_actions.length > 0 ||
+      actions.verifications.length > 0 ||
+      actions.post_repair_events.length > 0 ||
+      actions.history_only_record_ids.length > 0
+    if (!hasObjects) {
+      return (
+        <Card>
+          <CardContent className="pt-6">
+            <p className="text-sm font-medium">{t('repairReports.noActionsTitle')}</p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {actions.warnings.includes('report_not_in_latest_db')
+                ? t('repairReports.notInLatestDb')
+                : t('repairReports.noActionsDescription')}
+            </p>
+          </CardContent>
+        </Card>
+      )
+    }
+    return (
+      <div className="space-y-4">
+        {actions.warnings.includes('report_not_in_latest_db') && (
+          <Alert>
+            <AlertCircle className="h-4 w-4" />
+            <AlertDescription>{t('repairReports.notInLatestDb')}</AlertDescription>
+          </Alert>
+        )}
+        {actions.repair_actions.length > 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm font-medium">
+                {t('repairReports.actionsTitle')} ({actions.repair_actions.length})
+              </CardTitle>
+            </CardHeader>
+            <CardContent data-testid="report-actions">
+              <ol className="flex flex-col gap-2 list-decimal ms-5">
+                {actions.repair_actions.map((action) => (
+                  <li
+                    key={action.id ?? action.action_text}
+                    className="text-sm leading-6"
+                  >
+                    {action.action_text || '—'}
+                    <span className="flex flex-wrap gap-1.5 mt-1">
+                      {action.role && (
+                        <Badge variant="secondary" className="font-mono text-[11px]">
+                          {action.role}
+                        </Badge>
+                      )}
+                      {action.category && (
+                        <Badge variant="outline" className="font-mono text-[11px]">
+                          {action.category}
+                        </Badge>
+                      )}
+                      {typeof action.frequency === 'number' && (
+                        <Badge variant="outline" className="font-mono text-[11px]">
+                          ×{action.frequency}
+                        </Badge>
+                      )}
+                    </span>
+                    {action.source_record_ids.length > 0 && (
+                      <span className="block text-xs text-muted-foreground font-mono">
+                        {action.source_record_ids.join(', ')}
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ol>
+            </CardContent>
+          </Card>
+        )}
+        {actions.verifications.length > 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm font-medium">
+                {t('repairReports.verificationsTitle')} ({actions.verifications.length})
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <ul className="flex flex-col gap-1.5">
+                {actions.verifications.map((item, index) => (
+                  <li key={item.id ?? index} className="text-sm leading-6">
+                    {item.sentence || '—'}
+                    <span className="flex flex-wrap gap-1.5 mt-1">
+                      {item.event_type && (
+                        <Badge variant="secondary" className="font-mono text-[11px]">
+                          {item.event_type}
+                        </Badge>
+                      )}
+                    </span>
+                    {item.record_id && (
+                      <span className="block text-xs text-muted-foreground font-mono">
+                        {t('repairReports.recordRef', { id: item.record_id })}
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </CardContent>
+          </Card>
+        )}
+        {actions.post_repair_events.length > 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm font-medium">
+                {t('repairReports.eventsTitle')} ({actions.post_repair_events.length})
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <ul className="flex flex-col gap-1.5">
+                {actions.post_repair_events.map((item, index) => (
+                  <li key={item.id ?? index} className="text-sm leading-6">
+                    {item.sentence || '—'}
+                    <span className="flex flex-wrap gap-1.5 mt-1">
+                      {item.event_type && (
+                        <Badge variant="secondary" className="font-mono text-[11px]">
+                          {item.event_type}
+                        </Badge>
+                      )}
+                    </span>
+                    {item.record_id && (
+                      <span className="block text-xs text-muted-foreground font-mono">
+                        {t('repairReports.recordRef', { id: item.record_id })}
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </CardContent>
+          </Card>
+        )}
+        {actions.history_only_record_ids.length > 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm font-medium">
+                {t('repairReports.historyOnlyTitle')} ({actions.history_only_record_ids.length})
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-xs text-muted-foreground font-mono break-words">
+                {actions.history_only_record_ids.join(', ')}
+              </p>
+            </CardContent>
+          </Card>
+        )}
+      </div>
+    )
+  }
+
   const renderAnalysis = () => {
     if (!report) return null
     const active = report.analysis_state === 'queued' || report.analysis_state === 'processing'
@@ -201,6 +382,9 @@ export function RepairReportDetailScreen({ reportId }: { reportId: string }) {
           <CardContent className="space-y-4">
             <p className="text-sm text-muted-foreground">
               {t(statusDescKey(report.analysis_state))}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              {t('repairReports.singleReportHint')}
             </p>
             {report.analysis_state === 'failed' && report.last_error && (
               <Alert variant="destructive">
@@ -232,6 +416,17 @@ export function RepairReportDetailScreen({ reportId }: { reportId: string }) {
                 {t('repairReports.runIncludes', { count: detail.last_run.report_ids.length })}
               </p>
             )}
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">{t('repairReports.actionsTitle')}</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="mb-4 text-sm text-muted-foreground">
+              {t('repairReports.actionsDescription')}
+            </p>
+            {renderActions()}
           </CardContent>
         </Card>
       </div>
