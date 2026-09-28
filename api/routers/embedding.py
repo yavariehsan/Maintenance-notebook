@@ -83,8 +83,17 @@ async def embed_content(embed_request: EmbedRequest):
             if item_type == "source":
                 source_item = await Source.get(item_id)
 
-                # Submit embed_source job (returns command_id for tracking)
-                command_id = await source_item.vectorize()
+                try:
+                    # Submit embed_source job (returns command_id for tracking)
+                    command_id = await source_item.vectorize()
+                except ValueError as e:
+                    # The source has no extractable text (e.g. a scanned,
+                    # image-only PDF processed without an OCR runtime): a
+                    # client-side 400 with the domain message, not an
+                    # opaque 500. vectorize() only raises ValueError for
+                    # the empty-text guard; submission failures arrive as
+                    # DatabaseOperationError and still surface as 500.
+                    raise HTTPException(status_code=400, detail=str(e))
                 message = "Source embedding job submitted"
 
             elif item_type == "note":
