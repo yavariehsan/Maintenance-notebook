@@ -560,8 +560,29 @@ async def create_build(
     )
     if not rows:
         raise RuntimeError("Failed to create LLM knowledge build")
+    stored = _build_row(rows[0])
+    if not stored["source_report_ids"] or not stored["manifest"]:
+        # Defense in depth (campact): a schemafull table silently drops
+        # array values on SurrealDB 2.6.5, so the stored row can come
+        # back empty despite non-empty input. Fail the orphan explicitly
+        # (never a lingering queued row) and refuse it BEFORE any worker
+        # command is submitted — a build without its report set could
+        # never execute.
+        message = (
+            "LLM knowledge build was not persisted with its report set "
+            "(source_report_ids/manifest came back empty). The database "
+            "schema is dropping array values; refusing to submit a build "
+            "that could never execute."
+        )
+        build_id = str(stored["id"])
+        logger.error(f"LLM knowledge build {build_id}: {message}")
+        try:
+            await mark_build_failed(build_id, message)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning(f"Could not mark dropped LLM build failed: {e}")
+        raise RuntimeError(message)
     logger.info(f"Registered LLM knowledge build over {len(report_ids)} report(s)")
-    return _build_row(rows[0])
+    return stored
 
 
 async def attach_command(build_id: str, command_id: str) -> None:

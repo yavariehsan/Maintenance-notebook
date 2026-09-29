@@ -1,0 +1,34 @@
+-- Migration 29: repair LLM knowledge tables to schemaless (campact).
+--
+-- Root cause: production `llm_knowledge_build` was SCHEMAFULL with
+-- `TYPE array` fields (applied from a pre-commit development draft;
+-- migration 28 as committed defines the tables SCHEMALESS but never
+-- re-applied). On SurrealDB 2.6.5, schemafull array/object fields
+-- SILENTLY DROP values on write, so every manual build was persisted
+-- with empty `source_report_ids`/`manifest` and the worker failed it
+-- at the manifest gate in under a second.
+--
+-- Row-preserving repair: no rows are created, updated, or deleted.
+-- Existing (empty, failed) builds stay exactly as they are — truthful
+-- failed history. `OVERWRITE` is required: plain `DEFINE TABLE`/`DEFINE
+-- FIELD` fail with "already exists" on 2.6.5 (verified in isolation).
+-- Row-preserving repair: no rows are created, updated, or deleted.
+-- Existing (empty, failed) builds stay exactly as they are — truthful
+-- failed history. Only the table mode and the lossy field definitions
+-- change, so future writes persist arrays intact. Scalar/record-typed
+-- fields are left in place: service writes match those types, and they
+-- fail loudly (never silently) on genuine type errors.
+-- Indexes from migration 28 are untouched.
+
+DEFINE TABLE OVERWRITE llm_knowledge_build SCHEMALESS;
+REMOVE FIELD IF EXISTS source_report_ids ON TABLE llm_knowledge_build;
+REMOVE FIELD IF EXISTS manifest ON TABLE llm_knowledge_build;
+REMOVE FIELD IF EXISTS warnings ON TABLE llm_knowledge_build;
+
+DEFINE TABLE OVERWRITE llm_knowledge_record SCHEMALESS;
+REMOVE FIELD IF EXISTS findings ON TABLE llm_knowledge_record;
+REMOVE FIELD IF EXISTS candidate_causes ON TABLE llm_knowledge_record;
+REMOVE FIELD IF EXISTS diagnostic_steps ON TABLE llm_knowledge_record;
+REMOVE FIELD IF EXISTS corrective_actions ON TABLE llm_knowledge_record;
+REMOVE FIELD IF EXISTS verification_steps ON TABLE llm_knowledge_record;
+REMOVE FIELD IF EXISTS post_repair_events ON TABLE llm_knowledge_record;

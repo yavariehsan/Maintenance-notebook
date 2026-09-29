@@ -178,8 +178,14 @@ def _repo_side_effect_factory(log):
         if "FROM llm_knowledge_build" in query and "status IN" in query:
             return []
         if query.startswith("CREATE llm_knowledge_build"):
-            return [{"id": "llm_knowledge_build:new1", "source_report_ids": [],
-                     "manifest": [], "status": "queued"}]
+            # Healthy persistence: the stored row carries the report set
+            # (a dropped row here would trip create_build's write guard).
+            return [{"id": "llm_knowledge_build:new1",
+                     "source_report_ids": ["repair_report:abc"],
+                     "manifest": [{"report_id": "repair_report:abc",
+                                   "filename": "m.xlsx",
+                                   "analysis_key": "key1"}],
+                     "status": "queued"}]
         if query.startswith("UPDATE"):
             return []
         raise AssertionError(f"unexpected query: {query}")

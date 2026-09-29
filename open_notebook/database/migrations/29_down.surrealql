@@ -1,0 +1,36 @@
+-- Migration 29 down: revert the schemaless repair (campact).
+--
+-- WARNING: downgrading reinstates the lossy schemafull definitions that
+-- caused silent array drops on SurrealDB 2.6.5 (see 29.surrealql). Only
+-- use to roll back the 29 change itself, never as cleanup.
+-- Non-destructive: no rows are deleted and no tables are removed.
+
+DEFINE TABLE OVERWRITE llm_knowledge_build SCHEMAFULL;
+DEFINE FIELD command_id ON llm_knowledge_build TYPE option<record<command>> PERMISSIONS FULL;
+DEFINE FIELD created ON llm_knowledge_build TYPE option<datetime> DEFAULT time::now() PERMISSIONS FULL;
+DEFINE FIELD error ON llm_knowledge_build TYPE option<string> PERMISSIONS FULL;
+DEFINE FIELD failed_record_count ON llm_knowledge_build TYPE option<int> PERMISSIONS FULL;
+DEFINE FIELD finished_at ON llm_knowledge_build TYPE option<datetime> PERMISSIONS FULL;
+DEFINE FIELD manifest ON llm_knowledge_build TYPE option<array> DEFAULT [] PERMISSIONS FULL;
+DEFINE FIELD model ON llm_knowledge_build TYPE option<string> PERMISSIONS FULL;
+DEFINE FIELD prompt_version ON llm_knowledge_build TYPE option<string> PERMISSIONS FULL;
+DEFINE FIELD record_count ON llm_knowledge_build TYPE option<int> PERMISSIONS FULL;
+DEFINE FIELD source_report_ids ON llm_knowledge_build TYPE array PERMISSIONS FULL;
+DEFINE FIELD started_at ON llm_knowledge_build TYPE option<datetime> PERMISSIONS FULL;
+DEFINE FIELD status ON llm_knowledge_build TYPE string DEFAULT 'queued' PERMISSIONS FULL;
+DEFINE FIELD warnings ON llm_knowledge_build TYPE option<array> DEFAULT [] PERMISSIONS FULL;
+
+DEFINE TABLE OVERWRITE llm_knowledge_record SCHEMAFULL;
+DEFINE FIELD build_id ON llm_knowledge_record TYPE record<llm_knowledge_build> PERMISSIONS FULL;
+DEFINE FIELD candidate_causes ON llm_knowledge_record TYPE option<array> DEFAULT [] PERMISSIONS FULL;
+DEFINE FIELD corrective_actions ON llm_knowledge_record TYPE option<array> DEFAULT [] PERMISSIONS FULL;
+DEFINE FIELD created ON llm_knowledge_record TYPE option<datetime> DEFAULT time::now() PERMISSIONS FULL;
+DEFINE FIELD diagnostic_steps ON llm_knowledge_record TYPE option<array> DEFAULT [] PERMISSIONS FULL;
+DEFINE FIELD findings ON llm_knowledge_record TYPE option<array> DEFAULT [] PERMISSIONS FULL;
+DEFINE FIELD post_repair_events ON llm_knowledge_record TYPE option<array> DEFAULT [] PERMISSIONS FULL;
+DEFINE FIELD record_error ON llm_knowledge_record TYPE option<string> PERMISSIONS FULL;
+DEFINE FIELD source_record_id ON llm_knowledge_record TYPE string PERMISSIONS FULL;
+DEFINE FIELD source_report_id ON llm_knowledge_record TYPE record<repair_report> PERMISSIONS FULL;
+DEFINE FIELD source_text ON llm_knowledge_record TYPE string PERMISSIONS FULL;
+DEFINE FIELD symptom ON llm_knowledge_record TYPE option<string> PERMISSIONS FULL;
+DEFINE FIELD verification_steps ON llm_knowledge_record TYPE option<array> DEFAULT [] PERMISSIONS FULL;

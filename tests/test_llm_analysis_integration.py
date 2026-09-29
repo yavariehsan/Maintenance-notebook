@@ -37,6 +37,137 @@ async def test_create_build_rejects_empty_manifest():
     assert not any(q.startswith("CREATE") for q in queries)
 
 
+@pytest.mark.asyncio
+async def test_create_build_raises_when_database_drops_manifest():
+    """A silent array drop must fail loudly, before any command is submitted.
+
+    Regression for the campact root cause: on a schemafull table SurrealDB
+    2.6.5 stores ``source_report_ids``/``manifest`` as empty despite
+    non-empty input, which used to produce builds that could never
+    execute. ``create_build`` must refuse the dropped row instead of
+    returning it.
+    """
+    from api import llm_knowledge_service as llm_service
+
+    dropped_row = {
+        "id": "llm_knowledge_build:dropped1",
+        "source_report_ids": [],
+        "manifest": [],
+        "status": "queued",
+        "command_id": None,
+        "model": "model:x",
+        "prompt_version": "m12-v1",
+        "error": None,
+        "warnings": [],
+        "record_count": None,
+        "failed_record_count": None,
+        "created": "2026-09-30T00:00:00",
+        "started_at": None,
+        "finished_at": None,
+    }
+    queries = []
+
+    async def _repo(query, params=None):
+        queries.append(query)
+        return [dropped_row]
+
+    manifest = [
+        {
+            "report_id": "repair_report:a",
+            "filename": "Tiny.xlsx",
+            "analysis_key": "a3f9c2e1",
+        }
+    ]
+    with patch.object(llm_service, "repo_query", new=AsyncMock(side_effect=_repo)):
+        with pytest.raises(RuntimeError, match="not persisted with its report set"):
+            await llm_service.create_build(["repair_report:a"], manifest, "model:x")
+    assert sum(q.startswith("CREATE") for q in queries) == 1
+
+
+@pytest.mark.asyncio
+async def test_create_build_marks_dropped_row_failed_before_raising():
+    """A dropped row must not linger as a queued orphan (review fix).
+
+    The failed mark keeps build-list/Tasks truthful and keeps the row
+    out of the active-build guard's way; the RuntimeError still
+    prevents any command submission.
+    """
+    from api import llm_knowledge_service as llm_service
+
+    dropped_row = {
+        "id": "llm_knowledge_build:dropped2",
+        "source_report_ids": [],
+        "manifest": [],
+        "status": "queued",
+        "command_id": None,
+        "model": "model:x",
+        "prompt_version": "m12-v1",
+        "error": None,
+        "warnings": [],
+        "record_count": None,
+        "failed_record_count": None,
+        "created": "2026-09-30T00:00:00",
+        "started_at": None,
+        "finished_at": None,
+    }
+    queries = []
+
+    async def _repo(query, params=None):
+        queries.append((query, params))
+        return [dropped_row]
+
+    manifest = [{"report_id": "repair_report:a", "filename": "T.xlsx",
+                 "analysis_key": "k"}]
+    with patch.object(llm_service, "repo_query", new=AsyncMock(side_effect=_repo)):
+        with pytest.raises(RuntimeError, match="not persisted with its report set"):
+            await llm_service.create_build(["repair_report:a"], manifest, "model:x")
+    updates = [params for query, params in queries if query.startswith("UPDATE")]
+    assert updates, "dropped row must be marked failed before raising"
+    assert any(
+        (params or {}).get("status") == "failed" for params in updates
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_build_returns_intact_stored_row():
+    """A correctly persisted build passes through untouched (pin)."""
+    from api import llm_knowledge_service as llm_service
+
+    manifest = [
+        {
+            "report_id": "repair_report:a",
+            "filename": "Tiny.xlsx",
+            "analysis_key": "a3f9c2e1",
+        }
+    ]
+    stored_row = {
+        "id": "llm_knowledge_build:kept1",
+        "source_report_ids": ["repair_report:a"],
+        "manifest": manifest,
+        "status": "queued",
+        "command_id": None,
+        "model": "model:x",
+        "prompt_version": "m12-v1",
+        "error": None,
+        "warnings": [],
+        "record_count": None,
+        "failed_record_count": None,
+        "created": "2026-09-30T00:00:00",
+        "started_at": None,
+        "finished_at": None,
+    }
+
+    async def _repo(query, params=None):
+        return [stored_row]
+
+    with patch.object(llm_service, "repo_query", new=AsyncMock(side_effect=_repo)):
+        build = await llm_service.create_build(
+            ["repair_report:a"], manifest, "model:x"
+        )
+    assert build["source_report_ids"] == ["repair_report:a"]
+    assert build["manifest"] == manifest
+
+
 def _live_run(**overrides):
     row = {
         "id": "repair_analysis_run:run1",
@@ -510,7 +641,18 @@ async def test_inline_start_build_submits_no_command():
         if "FROM llm_knowledge_build" in query:
             return []
         if query.startswith("CREATE llm_knowledge_build"):
-            return [_finished_build_row(status="queued", command_id=None)]
+            # Healthy persistence: the stored row carries the report set.
+            return [_finished_build_row(
+                status="queued",
+                command_id=None,
+                manifest=[
+                    {
+                        "report_id": "repair_report:a",
+                        "filename": "cmms.xlsx",
+                        "analysis_key": "k1",
+                    }
+                ],
+            )]
         raise AssertionError(f"unexpected query: {query}")
 
     with (
