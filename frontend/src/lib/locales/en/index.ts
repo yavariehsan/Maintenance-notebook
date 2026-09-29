@@ -379,7 +379,6 @@ export const en = {
     verificationsTitle: "Verifications",
     eventsTitle: "Handover / outcome events",
     historyOnlyTitle: "History-only records",
-    recordRef: "Record {{id}}",
     notInLatestDb: "This report is not in the latest completed database snapshot.",
     deleteReport: "Delete report",
     deleteReportTitle: "Delete this repair report?",

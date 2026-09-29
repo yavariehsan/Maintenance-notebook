@@ -745,4 +745,31 @@ describe('TroubleshootingGuideScreen', () => {
       )
     })
   })
+
+  it('shows the failed build error once the failed build is selected', async () => {
+    const failedBuild: LLMKnowledgeBuild = {
+      ...llmBuild,
+      id: 'llm_knowledge_build:0tsuvd',
+      status: 'failed',
+      error: 'LLM knowledge build has no report manifest.',
+      record_count: 0,
+      failed_record_count: 0,
+    }
+    mockAll({
+      modesData: [],
+      sourceReports: [sourceA, sourceB],
+      llmBuilds: [failedBuild],
+    })
+    render(<TroubleshootingGuideScreen />)
+    await switchToLLM()
+
+    // Explicitly pick the failed build (it is never the auto default).
+    fireEvent.click(screen.getByRole('combobox'))
+    fireEvent.click(await screen.findByRole('option', { name: /failed/ }))
+    await waitFor(() => {
+      expect(
+        screen.getByText(/LLM knowledge build has no report manifest\./),
+      ).toBeInTheDocument()
+    })
+  })
 })

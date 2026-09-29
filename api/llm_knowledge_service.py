@@ -540,6 +540,10 @@ async def create_build(
     model: Optional[str],
 ) -> Dict[str, Any]:
     """Register a new build (previous builds are never touched)."""
+    if not report_ids or not manifest:
+        raise InvalidInputError(
+            "Cannot create an LLM knowledge build with no reports."
+        )
     rows = await repo_query(
         f"CREATE {TABLE_BUILD} CONTENT {{source_report_ids: $report_ids, "
         "manifest: $manifest, status: $status, command_id: NONE, "

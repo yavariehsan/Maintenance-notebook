@@ -17,6 +17,26 @@ def test_llm_command_registered_on_worker_package():
     assert callable(commands.generate_llm_knowledge_command)
 
 
+@pytest.mark.asyncio
+async def test_create_build_rejects_empty_manifest():
+    """An empty report set must 400, never create a build row (M17 Task 2)."""
+    from api import llm_knowledge_service as llm_service
+    from open_notebook.exceptions import InvalidInputError
+
+    queries = []
+
+    async def _repo(query, params=None):
+        queries.append(query)
+        raise AssertionError("no database write may happen")
+
+    with patch.object(llm_service, "repo_query", new=AsyncMock(side_effect=_repo)):
+        with pytest.raises(InvalidInputError):
+            await llm_service.create_build([], [], "model:x")
+        with pytest.raises(InvalidInputError):
+            await llm_service.create_build(["repair_report:a"], [], "model:x")
+    assert not any(q.startswith("CREATE") for q in queries)
+
+
 def _live_run(**overrides):
     row = {
         "id": "repair_analysis_run:run1",
@@ -286,6 +306,48 @@ async def test_analysis_reuses_finished_llm_build():
     seams["start_build"].assert_not_awaited()
     seams["llm_command"].assert_not_awaited()
     seams["mark_completed"].assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_llm_task_title_falls_back_to_build_id():
+    """A report-less build's task row stays recognizable (M17 Task 4)."""
+    from api.routers import tasks as tasks_router
+
+    cmd = {
+        "id": "command:task1",
+        "status": "failed",
+        "args": {"build_id": "llm_knowledge_build:0tsuvd"},
+        "result": None,
+        "error_message": "LLM knowledge build has no report manifest.",
+        "created": "2026-09-29T11:59:18",
+        "updated": "2026-09-29T11:59:19",
+        "started_at": "2026-09-29T11:59:19",
+        "updated_at": "2026-09-29T11:59:19",
+    }
+    build = {
+        "id": "llm_knowledge_build:0tsuvd",
+        "source_report_ids": [],
+    }
+
+    async def _repo(query, params=None):
+        if "generate_llm_knowledge" in query:
+            return [cmd]
+        if "FROM llm_knowledge_build" in query:
+            return [build]
+        if "FROM repair_report" in query:
+            return []
+        raise AssertionError(f"unexpected query: {query}")
+
+    with patch(
+        "open_notebook.database.repository.repo_query",
+        new=AsyncMock(side_effect=_repo),
+    ):
+        items = await tasks_router._llm_knowledge_tasks(50)
+    assert len(items) == 1
+    assert items[0].status == "failed"
+    assert items[0].error_message == "LLM knowledge build has no report manifest."
+    assert items[0].title is not None
+    assert "0tsuvd" in items[0].title
 
 
 def _finished_build_row(**overrides):

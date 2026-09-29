@@ -547,6 +547,11 @@ export function TroubleshootingGuideScreen() {
                   ))}
               </SelectContent>
             </Select>
+            {effectiveBuild?.error && (
+              <p className="font-mono text-xs text-destructive">
+                {t('llmKnowledge.buildErrorLabel')}: {effectiveBuild.error}
+              </p>
+            )}
           </CardContent>
         </Card>
 

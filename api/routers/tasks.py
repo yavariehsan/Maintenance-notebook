@@ -392,13 +392,19 @@ async def _llm_knowledge_tasks(limit: int) -> List[TaskItem]:
             for rid in builds.get(build_id, [])
             if build_id is not None
         ]
+        title = ", ".join(name for name in names if name) or None
+        if title is None and build_id is not None:
+            # Report-less builds (e.g. a build that failed before any
+            # report resolved) still need a recognizable row: fall back
+            # to the short build ID instead of an anonymous entry.
+            title = build_id[-6:]
         items.append(
             TaskItem(
                 job_id=str(cmd.get("id")),
                 item_type="llm_knowledge",
                 command_name="generate_llm_knowledge",
                 run_id=build_id,
-                title=", ".join(name for name in names if name) or None,
+                title=title,
                 source_id=None,
                 source_title=None,
                 status=status,

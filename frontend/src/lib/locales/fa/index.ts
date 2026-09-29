@@ -384,7 +384,6 @@ export const fa = {
     verificationsTitle: "راستی‌آزمایی‌ها",
     eventsTitle: "رویدادهای تحویل / نتیجه",
     historyOnlyTitle: "رکوردهای فقط-تاریخچه",
-    recordRef: "رکورد {{id}}",
     notInLatestDb: "این گزارش در آخرین تصویر تکمیل‌شده پایگاه داده نیست.",
     deleteReport: "حذف گزارش",
     deleteReportTitle: "این گزارش تعمیر حذف شود؟",

@@ -41,10 +41,10 @@ import type { RepairReport } from '@/lib/api/repair-reports'
 /**
  * Downstream repair-report detail: exactly two tabs — محتوا (10-row
  * preview of the uploaded workbook, never the engine) and تحلیل (the
- * per-report تحلیل محتوا control surface plus the report-scoped repair
- * actions mined from this file alone). Reuses the sources-detail tab/table
- * conventions and the troubleshooting guide's action rendering primitives
- * (badges, role/frequency, record refs) with no new scoring.
+ * per-report تحلیل محتوا control surface plus a counts summary of the
+ * repair actions mined from this file alone; full detail lives in the
+ * Repair Guide). Reuses the sources-detail tab/table conventions with
+ * no new scoring.
  */
 function statusLabelKey(state: RepairReport['analysis_state']): string {
   switch (state) {
@@ -232,6 +232,12 @@ export function RepairReportDetailScreen({ reportId }: { reportId: string }) {
     )
   }
 
+  const totalMinedObjects = (result: NonNullable<typeof actions>) =>
+    result.repair_actions.length +
+    result.verifications.length +
+    result.post_repair_events.length +
+    result.history_only_record_ids.length
+
   const renderActions = () => {
     if (actionsLoading) {
       return (
@@ -282,128 +288,36 @@ export function RepairReportDetailScreen({ reportId }: { reportId: string }) {
             <AlertDescription>{t('repairReports.notInLatestDb')}</AlertDescription>
           </Alert>
         )}
-        {actions.repair_actions.length > 0 && (
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm font-medium">
-                {t('repairReports.actionsTitle')} ({actions.repair_actions.length})
-              </CardTitle>
-            </CardHeader>
-            <CardContent data-testid="report-actions">
-              <ol className="flex flex-col gap-2 list-decimal ms-5">
-                {actions.repair_actions.map((action) => (
-                  <li
-                    key={action.id ?? action.action_text}
-                    className="text-sm leading-6"
-                  >
-                    {action.guide_instruction || action.action_text || '—'}
-                    {action.guide_instruction && action.action_text && (
-                      <span className="block text-xs text-muted-foreground">
-                        {t('troubleshootingGuide.basedOnLabel', { text: action.action_text })}
-                      </span>
-                    )}
-                    <span className="flex flex-wrap gap-1.5 mt-1">
-                      {action.role && (
-                        <Badge variant="secondary" className="font-mono text-[11px]">
-                          {action.role}
-                        </Badge>
-                      )}
-                      {action.category && (
-                        <Badge variant="outline" className="font-mono text-[11px]">
-                          {action.category}
-                        </Badge>
-                      )}
-                      {typeof action.frequency === 'number' && (
-                        <Badge variant="outline" className="font-mono text-[11px]">
-                          ×{action.frequency}
-                        </Badge>
-                      )}
-                    </span>
-                    {action.source_record_ids.length > 0 && (
-                      <span className="block text-xs text-muted-foreground font-mono">
-                        {action.source_record_ids.join(', ')}
-                      </span>
-                    )}
-                  </li>
-                ))}
-              </ol>
-            </CardContent>
-          </Card>
-        )}
-        {actions.verifications.length > 0 && (
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm font-medium">
-                {t('repairReports.verificationsTitle')} ({actions.verifications.length})
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <ul className="flex flex-col gap-1.5">
-                {actions.verifications.map((item, index) => (
-                  <li key={item.id ?? index} className="text-sm leading-6">
-                    {item.sentence || '—'}
-                    <span className="flex flex-wrap gap-1.5 mt-1">
-                      {item.event_type && (
-                        <Badge variant="secondary" className="font-mono text-[11px]">
-                          {item.event_type}
-                        </Badge>
-                      )}
-                    </span>
-                    {item.record_id && (
-                      <span className="block text-xs text-muted-foreground font-mono">
-                        {t('repairReports.recordRef', { id: item.record_id })}
-                      </span>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            </CardContent>
-          </Card>
-        )}
-        {actions.post_repair_events.length > 0 && (
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm font-medium">
-                {t('repairReports.eventsTitle')} ({actions.post_repair_events.length})
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <ul className="flex flex-col gap-1.5">
-                {actions.post_repair_events.map((item, index) => (
-                  <li key={item.id ?? index} className="text-sm leading-6">
-                    {item.sentence || '—'}
-                    <span className="flex flex-wrap gap-1.5 mt-1">
-                      {item.event_type && (
-                        <Badge variant="secondary" className="font-mono text-[11px]">
-                          {item.event_type}
-                        </Badge>
-                      )}
-                    </span>
-                    {item.record_id && (
-                      <span className="block text-xs text-muted-foreground font-mono">
-                        {t('repairReports.recordRef', { id: item.record_id })}
-                      </span>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            </CardContent>
-          </Card>
-        )}
-        {actions.history_only_record_ids.length > 0 && (
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm font-medium">
-                {t('repairReports.historyOnlyTitle')} ({actions.history_only_record_ids.length})
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-xs text-muted-foreground font-mono break-words">
-                {actions.history_only_record_ids.join(', ')}
-              </p>
-            </CardContent>
-          </Card>
-        )}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm font-medium">
+              {t('repairReports.actionsTitle')} ({totalMinedObjects(actions)})
+            </CardTitle>
+          </CardHeader>
+          <CardContent data-testid="report-actions" className="space-y-2">
+            <ul className="flex flex-col gap-1 text-sm">
+              <li>
+                {t('repairReports.actionsTitle')}:{' '}
+                <span className="font-mono">{actions.repair_actions.length}</span>
+              </li>
+              <li>
+                {t('repairReports.verificationsTitle')}:{' '}
+                <span className="font-mono">{actions.verifications.length}</span>
+              </li>
+              <li>
+                {t('repairReports.eventsTitle')}:{' '}
+                <span className="font-mono">{actions.post_repair_events.length}</span>
+              </li>
+              <li>
+                {t('repairReports.historyOnlyTitle')}:{' '}
+                <span className="font-mono">{actions.history_only_record_ids.length}</span>
+              </li>
+            </ul>
+            <p className="text-sm text-muted-foreground">
+              {t('repairReports.viewGuideHint')}
+            </p>
+          </CardContent>
+        </Card>
       </div>
     )
   }

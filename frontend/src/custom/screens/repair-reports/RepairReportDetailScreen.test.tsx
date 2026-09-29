@@ -1,5 +1,5 @@
 import React from 'react'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, within } from '@testing-library/react'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RepairReportDetailScreen } from './RepairReportDetailScreen'
@@ -301,6 +301,70 @@ describe('RepairReportDetailScreen', () => {
     expect(screen.getByText('llmKnowledge.startBuildButton')).toBeEnabled()
   })
 
+  it('summarizes mined actions with counts instead of dumping every item', () => {
+    mockHooks('completed')
+    mockUseActions.mockReturnValue({
+      data: {
+        report_id: 'repair_report:abc',
+        analysis_key: 'a3f9c2e1',
+        run_id: 'repair_analysis_run:r1',
+        record_ids: [],
+        repair_actions: [
+          { id: 'a1', action_text: 'UNIQUE_ACTION_TEXT_ONE', guide_instruction: null, role: 'corrective', category: null, frequency: 2, source_record_ids: ['k-B-1'] },
+          { id: 'a2', action_text: 'UNIQUE_ACTION_TEXT_TWO', guide_instruction: null, role: 'diagnostic', category: null, frequency: 1, source_record_ids: [] },
+        ],
+        verifications: [
+          { id: 'v1', sentence: 'UNIQUE_VERIFICATION_TEXT', event_type: 'test', record_id: 'k-B-2' },
+        ],
+        post_repair_events: [],
+        history_only_record_ids: ['k-B-9'],
+        warnings: [],
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useRepairReportActions>)
+    renderDetail('repair_report:abc')
+    selectTab('repairReports.analysisTab')
+
+    const section = screen.getByTestId('report-actions')
+    // Counts are visible per list…
+    expect(section.textContent).toMatch(/repairReports\.actionsTitle:\s*2/)
+    expect(section.textContent).toMatch(/repairReports\.verificationsTitle:\s*1/)
+    expect(section.textContent).toMatch(/repairReports\.eventsTitle:\s*0/)
+    expect(section.textContent).toMatch(/repairReports\.historyOnlyTitle:\s*1/)
+    // …but individual items are not dumped inline.
+    expect(screen.queryByText('UNIQUE_ACTION_TEXT_ONE')).not.toBeInTheDocument()
+    expect(screen.queryByText('UNIQUE_ACTION_TEXT_TWO')).not.toBeInTheDocument()
+    expect(screen.queryByText('UNIQUE_VERIFICATION_TEXT')).not.toBeInTheDocument()
+    expect(screen.queryByText('k-B-1')).not.toBeInTheDocument()
+    // The summary points at the Repair Guide for detail.
+    expect(within(section).getByText('repairReports.viewGuideHint')).toBeInTheDocument()
+  })
+
+  it('keeps the not-in-latest-db warning on the summary', () => {
+    mockHooks('completed')
+    mockUseActions.mockReturnValue({
+      data: {
+        report_id: 'repair_report:abc',
+        analysis_key: 'a3f9c2e1',
+        run_id: 'repair_analysis_run:r1',
+        record_ids: [],
+        repair_actions: [],
+        verifications: [],
+        post_repair_events: [],
+        history_only_record_ids: [],
+        warnings: ['report_not_in_latest_db'],
+      },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useRepairReportActions>)
+    renderDetail('repair_report:abc')
+    selectTab('repairReports.analysisTab')
+    expect(screen.getByText('repairReports.notInLatestDb')).toBeInTheDocument()
+  })
+
   it('disables the LLM build button while a build is active', () => {
     mockHooks('not_analyzed')
     mockUseLLMBuilds.mockReturnValue({
@@ -329,5 +393,40 @@ describe('RepairReportDetailScreen', () => {
     renderDetail('repair_report:abc')
     selectTab('repairReports.analysisTab')
     expect(screen.getByText('llmKnowledge.startBuildButton')).toBeDisabled()
+  })
+
+  it('enables Generate again after the build reaches a terminal state', () => {
+    mockHooks('not_analyzed')
+    mockUseLLMBuilds.mockReturnValue({
+      data: [
+        {
+          id: 'llm_knowledge_build:7',
+          source_report_ids: ['repair_report:abc'],
+          manifest: [],
+          status: 'failed',
+          command_id: 'command:9',
+          model: null,
+          prompt_version: 'm12-v1',
+          error: 'LLM knowledge build has no report manifest.',
+          warnings: [],
+          record_count: 0,
+          failed_record_count: 0,
+          created: '2026-09-28T10:00:00',
+          started_at: null,
+          finished_at: '2026-09-28T10:00:01',
+        },
+      ],
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useLLMBuilds>)
+    // Fresh render (as after reload): state derives from backend builds.
+    renderDetail('repair_report:abc')
+    selectTab('repairReports.analysisTab')
+    expect(screen.getByText('llmKnowledge.startBuildButton')).toBeEnabled()
+    // …and the failure that released it stays visible with its error.
+    expect(
+      screen.getByText(/LLM knowledge build has no report manifest\./),
+    ).toBeInTheDocument()
   })
 })
