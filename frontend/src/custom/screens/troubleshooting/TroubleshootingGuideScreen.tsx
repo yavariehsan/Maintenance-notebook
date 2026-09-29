@@ -112,15 +112,6 @@ export function TroubleshootingGuideScreen() {
   const { data: sourceReports } = useRepairReports()
   const { data: analysisRuns } = useRepairAnalysisRuns()
   const { data: llmBuilds } = useLLMBuilds()
-  const {
-    data: llmGuide,
-    isLoading: llmGuideLoading,
-    isError: llmGuideError,
-    refetch: refetchLlmGuide,
-  } = useLLMGuide(
-    knowledgeSource === 'llm' ? selectedBuildId || null : null,
-    knowledgeSource === 'llm' ? selectedLlmSourceId || null : null,
-  )
 
   const latestCompletedRun = useMemo(() => {
     const completed = (analysisRuns ?? []).filter((run) => run.status === 'completed')
@@ -178,6 +169,24 @@ export function TroubleshootingGuideScreen() {
   )
   const llmSourceDeleted = (reportId: string) =>
     !(sourceReports ?? []).some((report) => report.id === reportId)
+
+  /**
+   * Guide query (M16): fetch for the *effective* build — the explicit
+   * pick when the user made one, otherwise the auto-selected newest
+   * finished build. Fetching only `selectedBuildId` left the default
+   * build displayed but never loaded.
+   */
+  const {
+    data: llmGuide,
+    isLoading: llmGuideLoading,
+    isError: llmGuideError,
+    refetch: refetchLlmGuide,
+  } = useLLMGuide(
+    knowledgeSource === 'llm'
+      ? selectedBuildId || effectiveBuild?.id || null
+      : null,
+    knowledgeSource === 'llm' ? selectedLlmSourceId || null : null,
+  )
 
   const handleSelectCode = (code: string) => {
     setSelectedCode(code)
@@ -793,6 +802,12 @@ export function TroubleshootingGuideScreen() {
   }
 
   const renderBody = () => {
+    // The LLM branch is independent of the mining database: builds live
+    // in their own store, so an unavailable mining database must never
+    // hide already-generated LLM knowledge (M16).
+    if (knowledgeSource === 'llm') {
+      return renderLlmBranch()
+    }
     if (statusLoading) {
       return (
         <div className="flex items-center justify-center py-12">
@@ -863,10 +878,6 @@ export function TroubleshootingGuideScreen() {
 
     return (
       <div className="space-y-6">
-        {renderKnowledgeSourceSelector()}
-        {knowledgeSource === 'llm' ? (
-          renderLlmBranch()
-        ) : (
         <>
         {renderSourceSelector()}
         {sourceMismatch ? (
@@ -950,7 +961,6 @@ export function TroubleshootingGuideScreen() {
           </>
         )}
         </>
-        )}
       </div>
     )
   }
@@ -963,6 +973,7 @@ export function TroubleshootingGuideScreen() {
             <h1 className="font-display text-2xl font-bold tracking-tight">{t('troubleshootingGuide.title')}</h1>
             <p className="mt-1 text-sm text-muted-foreground">{t('troubleshootingGuide.description')}</p>
           </div>
+          {renderKnowledgeSourceSelector()}
           {renderBody()}
         </div>
       </div>

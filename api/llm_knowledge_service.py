@@ -683,6 +683,18 @@ async def find_active_build_for_reports(
             continue
         command_id = str(build.get("command_id")) if build.get("command_id") else None
         if command_id is None:
+            if str(build.get("status")) == BUILD_RUNNING:
+                # Inline execution (analysis worker, no command row):
+                # liveness comes from started_at + the worker lease, not
+                # the submit grace — slow providers must never be
+                # declared stale mid-run.
+                started = _parse_time(build.get("started_at"))
+                now = datetime.now(timezone.utc).timestamp()
+                if started is None or (now - started) < RUNNING_LEASE_SECONDS:
+                    return _build_row(build)
+                await _finalize_stale_build(
+                    build, "The LLM worker stopped without completing.")
+                continue
             created = _parse_time(build.get("created"))
             now = datetime.now(timezone.utc).timestamp()
             if created is None or (now - created) < SUBMIT_GRACE_SECONDS:
@@ -702,6 +714,29 @@ async def find_active_build_for_reports(
         if _command_live(command, build):
             return _build_row(build)
         await _finalize_stale_build(build, "The LLM worker stopped without completing.")
+    return None
+
+
+async def find_latest_finished_build_for_reports(
+    report_ids: List[str],
+) -> Optional[Dict[str, Any]]:
+    """Latest finished (completed/partial) build over the exact same set.
+
+    Lets a retried analysis reuse knowledge that already exists instead
+    of executing a duplicate full build — the active-build guard only
+    covers queued/running builds, so a crash between LLM completion and
+    run completion would otherwise build everything twice. Failed builds
+    are NOT reused: a new analysis is a fresh chance for generation.
+    """
+    rows = await repo_query(
+        f"SELECT * FROM {TABLE_BUILD} WHERE status IN $statuses "
+        "ORDER BY created DESC",
+        {"statuses": [BUILD_COMPLETED, BUILD_PARTIAL]},
+    )
+    for build in rows or []:
+        build_reports = [str(item) for item in build.get("source_report_ids") or []]
+        if _same_report_set(build_reports, report_ids):
+            return _build_row(build)
     return None
 
 
@@ -813,7 +848,10 @@ async def resolve_llm_model_id(explicit_model_id: Optional[str] = None) -> str:
 
 
 async def start_build(
-    report_ids: List[str], model_id: Optional[str] = None
+    report_ids: List[str],
+    model_id: Optional[str] = None,
+    *,
+    submit_command: bool = True,
 ) -> Dict[str, Any]:
     """Validate reports, dedupe against an active equivalent, submit work.
 
@@ -822,6 +860,14 @@ async def start_build(
     for unknown reports; ``InvalidInputError`` for an empty set.
     Reports, mining knowledge, and embeddings are never touched here —
     only a new build row plus a worker command are created.
+
+    When ``submit_command`` is False no worker command is submitted:
+    the caller executes the build inline itself (the analysis worker
+    runs generation inside its own job so exactly one executor exists).
+    The build stays ``queued`` (no ``command_id``) until the inline
+    execution marks it running; the active-build guard still treats it
+    as in-flight, so a concurrent manual submission reuses it (409)
+    instead of duplicating it.
     """
     from api import repair_report_service as reports
     from api.command_service import CommandService
@@ -870,6 +916,12 @@ async def start_build(
 
     await preflight_llm_generation(model_id)
     build = await create_build(resolved, manifest, model_id)
+    if not submit_command:
+        logger.info(
+            f"Created LLM knowledge build {build['id']} "
+            "(inline execution; no worker command submitted)"
+        )
+        return build
     try:
         command_id = await CommandService.submit_command_job(
             "open_notebook",

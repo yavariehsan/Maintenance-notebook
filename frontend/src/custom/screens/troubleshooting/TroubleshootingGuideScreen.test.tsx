@@ -686,4 +686,63 @@ describe('TroubleshootingGuideScreen', () => {
       ).toBeInTheDocument()
     })
   })
+
+  it('renders the LLM branch while the mining database is unavailable', async () => {
+    mockAll({
+      status: { ...available, state: 'missing' },
+      modesData: [],
+      sourceReports: [sourceA, sourceB],
+      llmBuilds: [llmBuild],
+      llmGuideData,
+    })
+    render(<TroubleshootingGuideScreen />)
+    await switchToLLM()
+
+    const boxes = screen.getAllByRole('combobox')
+    fireEvent.click(boxes[boxes.length - 1])
+    fireEvent.click((await screen.findAllByRole('option'))[0])
+    await waitFor(() => {
+      expect(screen.getByTestId('llm-guide')).toBeInTheDocument()
+    })
+    // The mining outage never leaks into the independent LLM output.
+    expect(
+      screen.queryByText('troubleshootingGuide.databaseUnavailableTitle'),
+    ).not.toBeInTheDocument()
+  })
+
+  it('keeps the mining unavailable state for the mining method', () => {
+    mockAll({
+      status: { ...available, state: 'missing' },
+      modesData: [],
+      llmBuilds: [llmBuild],
+    })
+    render(<TroubleshootingGuideScreen />)
+    expect(
+      screen.getByText('troubleshootingGuide.databaseUnavailableTitle'),
+    ).toBeInTheDocument()
+    expect(screen.queryByTestId('llm-guide')).not.toBeInTheDocument()
+  })
+
+  it('fetches the guide for the auto-selected newest finished build', async () => {
+    mockAll({
+      modesData: [],
+      sourceReports: [sourceA, sourceB],
+      llmBuilds: [llmBuild],
+      llmGuideData,
+    })
+    render(<TroubleshootingGuideScreen />)
+    await switchToLLM()
+
+    // No explicit build pick: the newest finished build is the default.
+    // Selecting only the source must fetch (build, source), not stall.
+    const boxes = screen.getAllByRole('combobox')
+    fireEvent.click(boxes[boxes.length - 1])
+    fireEvent.click((await screen.findAllByRole('option'))[0])
+    await waitFor(() => {
+      expect(mockLLMGuide).toHaveBeenCalledWith(
+        'llm_knowledge_build:12',
+        'repair_report:aaa',
+      )
+    })
+  })
 })

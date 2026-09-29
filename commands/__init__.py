@@ -14,6 +14,7 @@ from .embedding_commands import (
     embed_source_command,
     rebuild_embeddings_command,
 )
+from .llm_knowledge_commands import generate_llm_knowledge_command
 from .podcast_commands import generate_podcast_command
 from .repair_report_commands import analyze_repair_reports_command
 from .source_commands import process_source_command
@@ -28,4 +29,5 @@ __all__ = [
     "generate_podcast_command",
     "process_source_command",
     "analyze_repair_reports_command",
+    "generate_llm_knowledge_command",
 ]

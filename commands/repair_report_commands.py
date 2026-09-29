@@ -16,6 +16,17 @@ Permanent problems (unknown run, missing workbook, unreadable input,
 engine configuration) raise ``ValueError`` so the job is marked
 ``failed`` without burning retries; anything else retries.
 
+LLM phase (M16): after the mining engine succeeds, this command triggers
+the independent LLM Knowledge Generation pipeline over the same reports
+and executes it inline (``_run_llm_phase`` → ``generate_llm_knowledge``
+with no command context — no queue round-trip, so no single-worker
+deadlock). Order is strictly mining → LLM → run completed; the LLM
+pipeline reads only the raw workbooks, never mining output. LLM failures
+(preflight with no model configured, provider errors, build failures)
+are logged explicitly and never fail the mining result: the run still
+completes and the LLM build (if created) carries its own terminal
+status (completed / partial / failed) for the Repair Guide to display.
+
 NOTE: this module must NOT use ``from __future__ import annotations``.
 The surreal-commands registry resolves the command's input/output type
 hints at registration time and cannot resolve postponed (string)
@@ -34,7 +45,7 @@ from loguru import logger
 from surreal_commands import CommandInput, CommandOutput, command
 
 from api import repair_report_service as reports
-from open_notebook.exceptions import ConfigurationError
+from open_notebook.exceptions import ConfigurationError, NotFoundError
 
 
 class AnalyzeRepairReportsInput(CommandInput):
@@ -224,6 +235,24 @@ async def analyze_repair_reports_command(
             )
             logger.error(message)
             raise ValueError(message)
+        # LLM phase (M16): independent knowledge over the same raw
+        # reports, executed inline before the run completes. Mining →
+        # LLM → completed, strictly sequential; LLM failures never fail
+        # the mining result (see _run_llm_phase).
+        llm_outcome = await _run_llm_phase(report_ids)
+        if llm_outcome is not None:
+            logger.info(
+                f"Analysis run {run_id} LLM phase: "
+                f"build {llm_outcome['build_id']} "
+                f"({llm_outcome['status']}, "
+                f"{llm_outcome['records']} ok, "
+                f"{llm_outcome['failed_records']} failed)"
+            )
+        else:
+            logger.info(
+                f"Analysis run {run_id} LLM phase: skipped "
+                "(no build; see warning above)"
+            )
         await reports.mark_run_completed(run_id, counts)
         for report_id in report_ids:
             await reports._set_report_completed(report_id, run_id)
@@ -265,6 +294,113 @@ async def analyze_repair_reports_command(
             os.rmdir(tmp_dir)
         except OSError:
             pass
+
+
+async def _run_llm_command(build_id: str) -> Any:
+    """Execute one LLM build inline (module seam: tests stub this).
+
+    Calls the real ``generate_llm_knowledge`` worker function directly —
+    without a queue round-trip — so the analysis worker never deadlocks
+    waiting on a job only it can pick up. ``execution_context`` is None,
+    which the command tolerates (heartbeat simply stays off).
+    """
+    from commands.llm_knowledge_commands import (
+        GenerateLLMKnowledgeInput,
+        generate_llm_knowledge_command,
+    )
+
+    return await generate_llm_knowledge_command(
+        GenerateLLMKnowledgeInput(build_id=build_id)
+    )
+
+
+async def _run_llm_phase(report_ids: List[str]) -> Optional[Dict[str, Any]]:
+    """Trigger and execute LLM generation for one analysis run.
+
+    Returns an outcome dict (build_id, status, records, failed_records;
+    status is one of completed/partial/failed) or None when no build
+    could start (e.g. no language model configured). Permanent LLM
+    failures are logged explicitly and never fail the mining run.
+    Transient errors (DB conflicts, provider timeouts) propagate so the
+    analysis job retries; mining re-runs in seconds and the LLM build
+    resumes instead of duplicating.
+    """
+    from api import llm_knowledge_service as llm
+    from open_notebook.exceptions import InvalidInputError
+
+    # Retry-after-completion: finished knowledge for this exact report
+    # set is reused, never rebuilt (the active-build guard only covers
+    # queued/running builds).
+    finished = await llm.find_latest_finished_build_for_reports(report_ids)
+    if finished is not None:
+        build_id = str(finished["id"])
+        logger.info(
+            f"Reusing finished LLM knowledge build {build_id} "
+            f"({finished.get('status')}) for analysis"
+        )
+        return {
+            "build_id": build_id,
+            "status": str(finished.get("status")),
+            "records": int(finished.get("record_count") or 0),
+            "failed_records": int(finished.get("failed_record_count") or 0),
+        }
+    try:
+        # Inline execution: no worker command is submitted (exactly one
+        # executor — this job — so a queued duplicate can never race it).
+        build = await llm.start_build(report_ids, submit_command=False)
+        build_id = str(build["id"])
+        logger.info(f"Analysis triggered LLM knowledge build {build_id}")
+    except llm.BuildInProgressError as e:
+        # Retry/resume path: an equivalent build is already active.
+        # Reuse it instead of creating a duplicate.
+        build_id = str(e.build_id)
+        logger.info(
+            f"Reusing active LLM knowledge build {build_id} for analysis"
+        )
+    except (ConfigurationError, InvalidInputError, NotFoundError) as e:
+        logger.warning(
+            f"Skipping LLM knowledge generation: {e}. "
+            "Mining output is unaffected."
+        )
+        return None
+    # Any other submit error is transient: propagate for retry rather
+    # than completing the run with a silent LLM gap.
+    try:
+        outcome = await _run_llm_command(build_id)
+    except (ValueError, ConfigurationError) as e:
+        # Permanent: the generate command already marked the build
+        # failed. Mining still completes; the failed build stays
+        # visible in Repair Guide (explicit, never silent success).
+        logger.warning(
+            f"LLM knowledge build {build_id} failed permanently: {e}. "
+            "Mining output is unaffected."
+        )
+        return {
+            "build_id": build_id,
+            "status": "failed",
+            "records": 0,
+            "failed_records": 0,
+        }
+    # Any other exception is transient (DB read/write conflict, provider
+    # timeout, LLM wall-clock): propagate so the analysis job retries.
+    # Mining re-runs in seconds and the LLM build resumes via
+    # equivalent-build reuse + persisted-record skip — never duplicates.
+    if outcome.success and outcome.failed_records:
+        status = "partial"
+    elif outcome.success:
+        status = "completed"
+    else:
+        status = "failed"
+    logger.info(
+        f"LLM knowledge build {build_id} finished inline: "
+        f"{outcome.records} ok, {outcome.failed_records} failed"
+    )
+    return {
+        "build_id": build_id,
+        "status": status,
+        "records": outcome.records,
+        "failed_records": outcome.failed_records,
+    }
 
 
 async def _heartbeat_once(command_id: str) -> None:
