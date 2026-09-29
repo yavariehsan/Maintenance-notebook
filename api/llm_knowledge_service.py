@@ -861,6 +861,14 @@ async def start_build(
         raise InvalidInputError("LLM knowledge worker is unavailable.") from e
 
     model_id = await resolve_llm_model_id(model_id)
+    # Fail fast (M14 §7): verify the generation path returns valid
+    # output BEFORE creating build rows or submitting commands. A
+    # failing preflight raises ConfigurationError (→ HTTP 422) with
+    # actionable diagnostics instead of producing dozens of predictable
+    # per-record failures.
+    from api.llm_generation import preflight_llm_generation
+
+    await preflight_llm_generation(model_id)
     build = await create_build(resolved, manifest, model_id)
     try:
         command_id = await CommandService.submit_command_job(
