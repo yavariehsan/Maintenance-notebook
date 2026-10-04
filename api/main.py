@@ -215,6 +215,25 @@ async def lifespan(app: FastAPI):
 
     logger.success("API initialization completed successfully")
 
+    # Startup recovery: orphaned `running` commands from a previous
+    # session (app closed, worker crash, machine restart) can never be
+    # resumed — restarted workers only pick up `new`. Reconcile them now
+    # so the Tasks page never shows false "processing" forever.
+    # Best-effort: reconciliation never fails startup; timestamp-less
+    # rows flip only under system-wide quiescence (no worker alive),
+    # fresh heartbeats always veto.
+    try:
+        from api.command_service import CommandService
+
+        summary = await CommandService.reconcile_stale_commands(allow_bare=True)
+        if summary.get("reconciled"):
+            logger.warning(
+                f"Startup reconciled {summary['reconciled']} stale "
+                f"command(s): {summary['reconciled_ids']}"
+            )
+    except Exception as e:
+        logger.warning(f"Startup command reconciliation skipped: {e}")
+
     # Yield control to the application
     yield
 

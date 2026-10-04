@@ -81,6 +81,16 @@ async def list_tasks(limit: int = Query(50, ge=1, le=200)):
     """
     from open_notebook.database.repository import repo_query
 
+    # Heal-on-read: a previous session's orphaned `running` jobs can never
+    # resume, so reconcile lease-expired ones before rendering. Genuinely
+    # active jobs (fresh heartbeat) are untouched by the lease check.
+    try:
+        from api.command_service import CommandService
+
+        await CommandService.reconcile_stale_commands()
+    except Exception as e:
+        logger.debug(f"Tasks-path reconciliation skipped: {e}")
+
     try:
         records = await repo_query(
             "SELECT * FROM command WHERE app = 'open_notebook' "
