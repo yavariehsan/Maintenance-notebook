@@ -1,10 +1,10 @@
 """Isolated E2E contract (M16): analysis worker → LLM seams → guide identity.
 
-No database, no LLM call. Mining is stubbed; generation is represented
-by schema-valid JSON verified through the REAL parser + semantic rules.
-These tests pin the exact identifiers and outcome contract the analysis
-worker relies on, so a silent mismatch between the stored LLM identity
-and the identity Repair Guide expects fails here first.
+No database, no LLM call. Mining is stubbed; Stage A generation is
+represented by schema-valid evidence verified through the REAL Stage A
+parser. These tests pin the exact identifiers and outcome contract the
+analysis worker relies on, so a silent mismatch between the stored LLM
+identity and the identity Repair Guide expects fails here first.
 
 DB-level persistence/discovery/guide-assembly are covered by
 ``test_llm_knowledge_service.py`` (scoping, ``assemble_llm_guide``,
@@ -21,66 +21,47 @@ import pytest
 from api import llm_knowledge_service as llm
 
 
-def _payload(**overrides):
-    payload = {
-        "symptom": "لرزش بستر",
-        "findings": [
-            {
-                "text": "سایش گاید",
-                "basis": "DATA_SUPPORTED",
-                "source_quote": "سایش",
-            }
-        ],
-        "candidate_causes": [
-            {"text": "خرابی گایدها", "basis": "LLM_INFERRED",
-             "source_quote": None}
-        ],
-        "diagnostic_steps": [
-            {"text": "لقی گاید کنترل شود", "basis": "LLM_INFERRED",
-             "source_quote": None}
-        ],
-        "corrective_actions": [
-            {
-                "text": "گاید تعویض شد",
-                "basis": "DATA_SUPPORTED",
-                "source_quote": "گاید تعویض شد",
-            }
-        ],
-        "verification_steps": [
-            {
-                "text": "تست شد",
-                "basis": "DATA_SUPPORTED",
-                "source_quote": "تست شد",
-            }
-        ],
-    }
-    payload.update(overrides)
-    return payload
-
-
 def test_record_identity_is_stable_and_never_filename():
-    headers = ["عیب", "تعمیر"]
-    rows = [["لرزش بستر", "گاید تعویض شد"], ["", None], ["تست شد", "تحویل شد"]]
-    inputs = llm.extract_record_inputs("a3f9c2e1", "Sheet1", headers, rows)
-    # Empty row skipped; Excel rows are 1-based (+header).
-    assert [i["source_record_id"] for i in inputs] == [
+    headers = ["کد فرایندی", "شرح درخواست", "شرح تعمیر", "مکانیزم خرابی",
+               "دلیل بروز عیب", "حالت خرابی"]
+    rows = [
+        ["B138", "لرزش بستر", "گاید تعویض شد", "Tool Pocket", "استهلاک", "تعویض ابزار"],
+        ["", "", "", "", "", ""],
+        ["B138", "تست شد", "تحویل شد", "-", "", "تعویض ابزار"],
+    ]
+    plans = llm.plan_stage_a_batches("a3f9c2e1", "Sheet1", headers, rows)
+    ids = [rid for plan in plans for rid in plan["source_record_ids"]]
+    # Empty six-field row skipped; Excel rows are 1-based (+header).
+    assert ids == [
         "a3f9c2e1-LLMROW-Sheet1-2",
         "a3f9c2e1-LLMROW-Sheet1-4",
     ]
-    # Verbatim column text, traceable to the workbook — never rewritten.
-    assert inputs[0]["source_text"] == "عیب: لرزش بستر\nتعمیر: گاید تعویض شد"
-    assert "cmms.xlsx" not in inputs[0]["source_record_id"]
+    members = llm.plan_stage_a_records(plans[0], headers, rows)
+    # Faithful six-field values, traceable to the workbook — never rewritten.
+    assert members[0]["fields"]["شرح درخواست"] == "لرزش بستر"
+    assert "cmms.xlsx" not in members[0]["source_record_id"]
 
 
-def test_stub_extraction_passes_real_validation_and_rules():
-    raw = json.dumps(_payload(), ensure_ascii=False)
-    extraction, errors = llm.parse_llm_extraction(raw)
+def test_stub_evidence_passes_real_stage_a_validation():
+    raw = json.dumps({
+        "equipment": "B138", "failure_mode": "تعویض ابزار", "record_count": 1,
+        "records": [{
+            "record_id": "a3f9c2e1-LLMROW-Sheet1-2",
+            "primary_focus": "Tool Pocket / Magazine",
+            "symptoms": ["لرزش بستر"], "observations": [],
+            "mechanism": "Tool Pocket", "cause": "استهلاک",
+            "diagnostic_checks": [], "corrective_actions": ["گاید تعویض شد"],
+            "verification": ["تست شد"], "unresolved": False,
+        }],
+        "focus_categories": [], "recurring_patterns": [],
+        "unresolved_cases": [],
+    }, ensure_ascii=False)
+    package, errors = llm.parse_stage_a_evidence(
+        raw, ["a3f9c2e1-LLMROW-Sheet1-2"])
     assert errors == []
-    assert extraction is not None
-    ruled = llm.apply_semantic_rules(extraction)
-    assert ruled.symptom == "لرزش بستر"
-    assert ruled.corrective_actions[0].basis == "DATA_SUPPORTED"
-    assert ruled.verification_steps[0].text == "تست شد"
+    assert package is not None
+    assert package.records[0].cause == "استهلاک"
+    assert package.records[0].verification == ["تست شد"]
 
 
 @pytest.mark.asyncio

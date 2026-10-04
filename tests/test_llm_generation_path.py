@@ -35,6 +35,50 @@ VALID_JSON = json.dumps({
     "verification_steps": [],
 })
 
+STAGE_A_VALID_JSON = json.dumps({
+    "equipment": "M3",
+    "failure_mode": "مشکل در تعویض ابزار (تعویض ابزار)",
+    "record_count": 1,
+    "records": [{
+        "record_id": "preflight-LLMROW-Sheet1-2",
+        "primary_focus": "Tool Pocket / Magazine",
+        "symptoms": ["مشکل در تعویض ابزار"],
+        "observations": [],
+        "mechanism": "",
+        "cause": "",
+        "diagnostic_checks": [],
+        "corrective_actions": [],
+        "verification": [],
+        "unresolved": False,
+    }],
+    "focus_categories": [],
+    "recurring_patterns": [],
+    "unresolved_cases": [],
+})
+
+# Same shape, but the model returned objects (not strings) inside the
+# free-form arrays — the exact class that blocked build startup.
+STAGE_A_NONSTRING_ARRAYS_JSON = json.dumps({
+    "equipment": "M3",
+    "failure_mode": "مشکل در تعویض ابزار (تعویض ابزار)",
+    "record_count": 1,
+    "records": [{
+        "record_id": "preflight-LLMROW-Sheet1-2",
+        "primary_focus": "Tool Pocket / Magazine",
+        "symptoms": ["مشکل در تعویض ابزار"],
+        "observations": [],
+        "mechanism": "",
+        "cause": "",
+        "diagnostic_checks": [],
+        "corrective_actions": [],
+        "verification": [],
+        "unresolved": False,
+    }],
+    "focus_categories": [],
+    "recurring_patterns": [{"pattern": "تکرار خرابی پاکت"}],
+    "unresolved_cases": [{"case": "علت نامشخص"}],
+})
+
 
 class RecordingChatOllama(ChatOllama):
     """Real ChatOllama subclass (isinstance passes) with canned invoke."""
@@ -74,36 +118,12 @@ def _provision(fake):
 
 
 @pytest.mark.asyncio
-async def test_empty_content_with_reasoning_only_is_empty_response():
+async def test_empty_content_with_reasoning_only_returns_empty():
     """M13 failure mode: thinking separated, final response empty."""
     fake = RecordingChatOllama(content="", reasoning_content="...thinking trace...")
     with _provision(fake):
-        raw = await gen.default_generate("شرح درخواست: x", "RID-1", None)
+        raw = await gen.LLMKnowledgeGenerator(None).generate_from_messages("sys", "user")
     assert raw == ""
-    ext, errs = svc.parse_llm_extraction(raw)
-    assert ext is None and errs == ["empty_response"]
-
-
-@pytest.mark.asyncio
-async def test_valid_structured_response_parses_with_provenance():
-    fake = RecordingChatOllama(content=VALID_JSON)
-    with _provision(fake):
-        raw = await gen.default_generate("شرح درخواست: x", "RID-1", None)
-    ext, errs = svc.parse_llm_extraction(raw)
-    assert errs == [] and ext is not None
-    assert ext.findings[0].basis == "DATA_SUPPORTED"
-    assert ext.findings[0].source_quote == "مدار امرجنسی بررسی شد"
-
-
-def test_malformed_json_rejected():
-    ext, errs = svc.parse_llm_extraction("{not json")
-    assert ext is None and any("malformed" in e for e in errs)
-
-
-def test_missing_field_rejected():
-    payload = json.dumps({"symptom": "x", "findings": []})
-    ext, errs = svc.parse_llm_extraction(payload)
-    assert ext is None and any("missing_required_field" in e for e in errs)
 
 
 @pytest.mark.asyncio
@@ -111,7 +131,7 @@ async def test_provider_error_raises_classified():
     fake = RecordingChatOllama(error=ConnectionError("conn reset"))
     with _provision(fake):
         with pytest.raises(Exception) as exc:
-            await gen.default_generate("شرح درخواست: x", "RID-1", None)
+            await gen.LLMKnowledgeGenerator(None).generate_from_messages("sys", "user")
     assert not isinstance(exc.value, ConnectionError)
 
 
@@ -121,7 +141,7 @@ async def test_generation_timeout_raises(monkeypatch):
     fake = RecordingChatOllama(content=VALID_JSON, delay=5.0)
     with _provision(fake):
         with pytest.raises(Exception):
-            await gen.default_generate("شرح درخواست: x", "RID-1", None)
+            await gen.LLMKnowledgeGenerator(None).generate_from_messages("sys", "user")
 
 
 @pytest.mark.asyncio
@@ -129,7 +149,7 @@ async def test_generate_disables_reasoning_for_ollama_chat():
     """The exact M13 mechanism: thinking must not consume the budget."""
     fake = RecordingChatOllama(content=VALID_JSON)
     with _provision(fake):
-        await gen.default_generate("شرح درخواست: x", "RID-1", None)
+        await gen.LLMKnowledgeGenerator(None).generate_from_messages("sys", "user")
     assert fake.seen_kwargs is not None
     assert fake.seen_kwargs.get("reasoning") is False
 
@@ -139,7 +159,7 @@ async def test_generate_omits_reasoning_for_other_providers():
     """Provider-safe: non-Ollama models never see the Ollama-only flag."""
     fake = FakeOtherModel()
     with _provision(fake):
-        raw = await gen.default_generate("شرح درخواست: x", "RID-1", None)
+        raw = await gen.LLMKnowledgeGenerator(None).generate_from_messages("sys", "user")
     assert raw == VALID_JSON
     assert "reasoning" not in (fake.seen_kwargs or {})
 
@@ -150,7 +170,7 @@ async def test_generate_requests_provider_json_mode():
     fake = RecordingChatOllama(content=VALID_JSON)
     with patch.object(gen, "provision_langchain_model",
                        new=AsyncMock(return_value=fake)) as prov:
-        await gen.default_generate("شرح درخواست: x", "RID-1", None)
+        await gen.LLMKnowledgeGenerator(None).generate_from_messages("sys", "user")
     assert prov.await_count == 1
     _, kwargs = prov.await_args
     assert kwargs.get("structured") == "json"
@@ -164,7 +184,7 @@ async def test_generate_uses_deterministic_temperature():
     fake = RecordingChatOllama(content=VALID_JSON)
     with patch.object(gen, "provision_langchain_model",
                        new=AsyncMock(return_value=fake)) as prov:
-        await gen.default_generate("شرح درخواست: x", "RID-1", None)
+        await gen.LLMKnowledgeGenerator(None).generate_from_messages("sys", "user")
     _, kwargs = prov.await_args
     assert kwargs.get("temperature") == 0
 
@@ -203,7 +223,7 @@ async def test_preflight_failure_blocks_build():
               new=AsyncMock(return_value={"id": "repair_report:abc",
                                           "filename": "m.xlsx",
                                           "analysis_key": "key1"})),
-        patch("api.llm_generation.default_generate",
+        patch("api.llm_generation.LLMKnowledgeGenerator.generate_from_messages",
               new=AsyncMock(return_value="")),
         patch("api.command_service.CommandService.submit_command_job",
               new=AsyncMock()) as submit,
@@ -225,7 +245,7 @@ async def test_preflight_provider_error_blocks_build_with_diagnostics():
               new=AsyncMock(return_value={"id": "repair_report:abc",
                                           "filename": "m.xlsx",
                                           "analysis_key": "key1"})),
-        patch("api.llm_generation.default_generate",
+        patch("api.llm_generation.LLMKnowledgeGenerator.generate_from_messages",
               new=AsyncMock(side_effect=ConfigurationError("provider down"))),
         patch("api.command_service.CommandService.submit_command_job",
               new=AsyncMock()) as submit,
@@ -247,8 +267,8 @@ async def test_preflight_success_allows_build():
               new=AsyncMock(return_value={"id": "repair_report:abc",
                                           "filename": "m.xlsx",
                                           "analysis_key": "key1"})),
-        patch("api.llm_generation.default_generate",
-              new=AsyncMock(return_value=VALID_JSON)),
+        patch("api.llm_generation.LLMKnowledgeGenerator.generate_from_messages",
+              new=AsyncMock(return_value=STAGE_A_VALID_JSON)),
         patch("api.command_service.CommandService.submit_command_job",
               new=AsyncMock(return_value="command:1")) as submit,
         patch.object(svc, "attach_command", new=AsyncMock()),
@@ -260,8 +280,63 @@ async def test_preflight_success_allows_build():
 
 
 @pytest.mark.asyncio
-async def test_think_disabled_content_without_think_tags_parses():
-    """Granite-style prose output still fails (documents the limit)."""
-    ext, errs = svc.parse_llm_extraction(
-        "We need to extract... {\"symptom\": \"x\"} trailing prose")
-    assert ext is None
+async def test_preflight_accepts_structured_response_with_nonstring_arrays():
+    """Incidental malformed sample content must not fail preflight.
+
+    The provider returned real structured JSON shaped like evidence, but
+    with objects (not strings) inside the free-form arrays. Preflight
+    tests capability, not semantic evidence, so it must succeed.
+    """
+    from api.llm_generation import preflight_llm_generation
+
+    with patch("api.llm_generation.LLMKnowledgeGenerator") as gen:
+        gen.return_value.generate_from_messages = AsyncMock(
+            return_value=STAGE_A_NONSTRING_ARRAYS_JSON)
+        await preflight_llm_generation("model:x")
+        assert gen.return_value.generate_from_messages.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_preflight_malformed_sample_still_allows_build():
+    """start_build reaches create_build despite a non-string sample array."""
+    log = []
+    with (
+        patch.object(svc, "repo_query", new=AsyncMock(
+            side_effect=_repo_side_effect_factory(log))),
+        patch("api.repair_report_service._get_report_internal",
+              new=AsyncMock(return_value={"id": "repair_report:abc",
+                                          "filename": "m.xlsx",
+                                          "analysis_key": "key1"})),
+        patch("api.llm_generation.LLMKnowledgeGenerator.generate_from_messages",
+              new=AsyncMock(return_value=STAGE_A_NONSTRING_ARRAYS_JSON)),
+        patch("api.command_service.CommandService.submit_command_job",
+              new=AsyncMock(return_value="command:1")) as submit,
+        patch.object(svc, "attach_command", new=AsyncMock()),
+    ):
+        build = await svc.start_build(["repair_report:abc"])
+    assert build["id"] == "llm_knowledge_build:new1"
+    assert any(q.startswith("CREATE llm_knowledge_build") for q in log)
+    submit.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_preflight_garbage_still_blocks_build():
+    """Non-JSON output is a genuine capability failure: startup still blocked."""
+    log = []
+    with (
+        patch.object(svc, "repo_query", new=AsyncMock(
+            side_effect=_repo_side_effect_factory(log))),
+        patch("api.repair_report_service._get_report_internal",
+              new=AsyncMock(return_value={"id": "repair_report:abc",
+                                          "filename": "m.xlsx",
+                                          "analysis_key": "key1"})),
+        patch("api.llm_generation.LLMKnowledgeGenerator.generate_from_messages",
+              new=AsyncMock(return_value="definitely not json {{{")),
+        patch("api.command_service.CommandService.submit_command_job",
+              new=AsyncMock()) as submit,
+    ):
+        with pytest.raises(ConfigurationError) as exc:
+            await svc.start_build(["repair_report:abc"])
+    assert "preflight" in str(exc.value).lower()
+    assert not any(q.startswith("CREATE llm_knowledge_build") for q in log)
+    submit.assert_not_called()

@@ -99,10 +99,29 @@ class LLMRecordItem(BaseModel):
     corrective_actions: List[LLMItemResponse] = Field(default_factory=list)
     verification_steps: List[LLMItemResponse] = Field(default_factory=list)
     post_repair_events: List[LLMItemResponse] = Field(default_factory=list)
+    stage_a_evidence: Optional[dict] = Field(
+        None, description="Stage A evidence package for batch rows"
+    )
     record_error: Optional[str] = Field(
         None, description="Traceable per-record failure, when invalid"
     )
     created: Optional[str] = None
+
+
+class LLMFinalGuide(BaseModel):
+    """One Stage B final guide: the primary user-facing LLM output."""
+
+    synthesis_id: Optional[str] = None
+    build_id: Optional[str] = None
+    equipment: Optional[str] = None
+    failure_mode: Optional[str] = None
+    guide_markdown: Optional[str] = None
+    record_count: Optional[int] = None
+    batch_ids: List[str] = Field(default_factory=list)
+    source_record_ids: List[str] = Field(default_factory=list)
+    model: Optional[str] = None
+    prompt_version: Optional[str] = None
+    math_warnings: List[str] = Field(default_factory=list)
 
 
 class LLMGuideResponse(BaseModel):
@@ -117,7 +136,14 @@ class LLMGuideResponse(BaseModel):
     source_deleted: bool = Field(
         False, description="Backing report deleted; identity preserved, no remap"
     )
-    records: List[LLMRecordItem] = Field(default_factory=list)
+    records: List[LLMRecordItem] = Field(
+        default_factory=list,
+        description="Stage A evidence rows (provenance, not primary output)",
+    )
+    final_guides: List[LLMFinalGuide] = Field(
+        default_factory=list,
+        description="Stage B final guides, one per Equipment + Failure Mode",
+    )
     warnings: List[str] = Field(
         default_factory=list, description="e.g. no_records_for_source"
     )
@@ -219,10 +245,11 @@ async def get_llm_guide(
 ):
     """LLM Troubleshooting Guide for one build + one source report.
 
-    Only knowledge belonging to the selected source is returned (never
-    silently mixed); a source with no records yields an explicit empty
-    state, and a deleted backing source keeps its identity with
-    ``source_deleted`` instead of remapping.
+    Records belong strictly to the selected source (never silently
+    mixed); final guides are relevance-filtered to syntheses covering
+    at least one of this source's records. A source with no records
+    yields an explicit empty state, and a deleted backing source keeps
+    its identity with ``source_deleted`` instead of remapping.
     """
     try:
         guide = await llm_knowledge.assemble_llm_guide(build_id, source_report_id)

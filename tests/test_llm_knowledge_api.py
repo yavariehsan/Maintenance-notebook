@@ -210,6 +210,7 @@ class TestLLMGuideEndpoint:
             "source_filename": "Sample.xlsx",
             "source_deleted": False,
             "records": [_record()],
+            "final_guides": [],
             "warnings": [],
         }
         guide.update(overrides)
@@ -303,10 +304,14 @@ def _workbook_bytes() -> bytes:
     book = Workbook()
     sheet = book.active
     sheet.title = "Sheet1"
-    sheet.append(["عیب", "اقدام"])
-    sheet.append(["لرزش بستر", "پالت تعویض گردید"])
-    sheet.append(["صدای غیرعادی", "تست شد"])
-    sheet.append(["داغ شدن", None])  # provider failure below
+    sheet.append(["کد فرایندی", "شرح درخواست", "شرح تعمیر", "مکانیزم خرابی",
+                  "دلیل بروز عیب", "حالت خرابی"])
+    sheet.append(["B138", "لرزش بستر", "پالت تعویض گردید", "Tool Pocket",
+                  "8- استهلاک قطعه یدکی", "تعویض ابزار"])
+    sheet.append(["B138", "صدای غیرعادی", "تست شد", "-",
+                  "نامشخص", "خرابی بلبرینگ"])
+    sheet.append(["B138", "داغ شدن", "موتور بررسی شد", "Overheating",
+                  "نامشخص", "خرابی موتور"])  # provider failure below
     buffer = BytesIO()
     book.save(buffer)
     book.close()
@@ -314,46 +319,65 @@ def _workbook_bytes() -> bytes:
 
 
 def _good_raw() -> str:
+    return _stage_a_raw([
+        "abc123-LLMROW-Sheet1-2",
+    ])
+
+
+def _stage_a_raw(member_ids):
     return json.dumps(
         {
-            "symptom": "لرزش بستر",
-            "findings": [
-                {"text": "wear", "basis": "DATA_SUPPORTED", "source_quote": "لرزش"}
-            ],
-            "candidate_causes": [],
-            "diagnostic_steps": [],
-            "corrective_actions": [
-                {"text": "پالت تعویض گردید", "basis": "DATA_SUPPORTED", "source_quote": "تعویض"}
-            ],
-            "verification_steps": [],
+            "equipment": "B138",
+            "failure_mode": "تعویض ابزار",
+            "record_count": len(member_ids),
+            "records": [{
+                "record_id": rid, "primary_focus": "Tool Pocket / Magazine",
+                "symptoms": ["لرزش بستر"], "observations": [],
+                "mechanism": "Tool Pocket", "cause": "8- استهلاک قطعه یدکی",
+                "diagnostic_checks": [], "corrective_actions": ["پالت تعویض گردید"],
+                "verification": [], "unresolved": False,
+            } for rid in member_ids],
+            "focus_categories": [],
+            "recurring_patterns": [],
+            "unresolved_cases": [],
         }
     )
 
 
 @pytest.mark.asyncio
 async def test_worker_partial_on_mixed_record_outcomes():
-    """Valid + malformed + provider-error records → partial, all traceable."""
+    """Valid + invalid + provider-error scopes → partial, all traceable."""
     from commands import llm_knowledge_commands as worker
 
-    async def _fake_generate(source_text, source_record_id, model_id):
-        if "لرزش" in source_text:
-            return _good_raw()
-        if "صدای" in source_text:
-            return "{not valid json"
+    guide = "\n".join([
+        "# ترتیب پیشنهادی تعمیرکار؛ نسخه عملیاتی",
+        "مرحله 1.",
+        "# دسته‌بندی کانون‌های اصلی خرابی B138",
+        "راهنمای کاربردی تعمیر:",
+        "### موارد نامشخص / بدون علت قطعی",
+    ])
+
+    async def _fake_generate(system, user, scope_id, model_id, max_tokens=None):
+        if "تعویض ابزار" in user:
+            return guide
+        if "خرابی بلبرینگ" in user:
+            return "متن بدون ساختار راهنما"
         raise RuntimeError("provider exploded")
 
     saved = []
     finished = {}
 
-    async def _save(build_id, report_id, source_record_id, source_text, extraction, error):
+    async def _save(build_id, equipment, failure_mode, markdown, count,
+                    batch_ids, source_ids, model, budget):
         saved.append(
             {
-                "source_record_id": source_record_id,
-                "ok": extraction is not None,
-                "error": error,
+                "scope_id": batch_ids[0],
+                "failure_mode": failure_mode,
+                "markdown": markdown,
+                "source_ids": source_ids,
             }
         )
-        return {"id": f"rec:{source_record_id}"}
+        return {"id": f"g:{failure_mode}"}
 
     async def _finish(build_id, **kwargs):
         finished.update(kwargs)
@@ -375,13 +399,13 @@ async def test_worker_partial_on_mixed_record_outcomes():
             ),
             patch.object(
                 worker.llm_knowledge,
-                "existing_source_record_ids",
+                "_existing_stage_b_scopes",
                 new=AsyncMock(return_value=set()),
             ),
             patch.object(
                 worker.llm_knowledge, "mark_build_running", new=AsyncMock()
             ),
-            patch.object(worker.llm_knowledge, "save_record", new=_save),
+            patch.object(worker.llm_knowledge, "save_stage_b_guide", new=_save),
             patch.object(worker.llm_knowledge, "mark_build_finished", new=_finish),
             patch.object(
                 worker.reports,
@@ -398,28 +422,34 @@ async def test_worker_partial_on_mixed_record_outcomes():
                 worker.GenerateLLMKnowledgeInput(build_id="llm_knowledge_build:1")
             )
     finally:
-        worker.set_generate_fn(worker._default_generate_fn)
+        worker.set_generate_fn(worker._default_batch_generate_fn)
 
     assert result.success is True
     assert result.records == 1
     assert result.failed_records == 2
     assert finished["status"] == "partial"
-    by_id = {item["source_record_id"]: item for item in saved}
-    assert by_id["abc123-LLMROW-Sheet1-2"]["ok"] is True
-    assert "malformed_json" in (by_id["abc123-LLMROW-Sheet1-3"]["error"] or "")
-    assert "provider_error" in (by_id["abc123-LLMROW-Sheet1-4"]["error"] or "")
+    assert len(saved) == 1
+    assert saved[0]["markdown"] == guide  # stored AS-IS
+    assert saved[0]["source_ids"] == ["abc123-LLMROW-Sheet1-2"]
+    assert any("خرابی بلبرینگ" in w for w in finished.get("warnings", []))
+    assert any("خرابی موتور" in w for w in finished.get("warnings", []))
 
 
 @pytest.mark.asyncio
 async def test_worker_skips_already_persisted_records():
-    """Retry resumes: stored records are never generated or saved again."""
+    """Retry resumes: guided scopes are never generated or saved again."""
     from commands import llm_knowledge_commands as worker
 
     calls = []
 
-    async def _fake_generate(source_text, source_record_id, model_id):
-        calls.append(source_record_id)
-        return _good_raw()
+    guide = "\n".join([
+        "# ترتیب پیشنهادی تعمیرکار؛ نسخه عملیاتی",
+        "مرحله 1.",
+    ])
+
+    async def _fake_generate(system, user, scope_id, model_id, max_tokens=None):
+        calls.append(scope_id)
+        return guide
 
     internal_build = _build(status="running")
     internal_report = {
@@ -438,21 +468,16 @@ async def test_worker_skips_already_persisted_records():
             ),
             patch.object(
                 worker.llm_knowledge,
-                "existing_source_record_ids",
-                new=AsyncMock(
-                    return_value={
-                        "abc123-LLMROW-Sheet1-2",
-                        "abc123-LLMROW-Sheet1-3",
-                    }
-                ),
+                "_existing_stage_b_scopes",
+                new=AsyncMock(return_value={("B138", "تعویض ابزار")}),
             ),
             patch.object(
                 worker.llm_knowledge, "mark_build_running", new=AsyncMock()
             ),
             patch.object(
                 worker.llm_knowledge,
-                "save_record",
-                new=AsyncMock(return_value={"id": "rec:x"}),
+                "save_stage_b_guide",
+                new=AsyncMock(return_value={"id": "g:x"}),
             ) as mock_save,
             patch.object(
                 worker.llm_knowledge,
@@ -474,11 +499,11 @@ async def test_worker_skips_already_persisted_records():
                 worker.GenerateLLMKnowledgeInput(build_id="llm_knowledge_build:1")
             )
     finally:
-        worker.set_generate_fn(worker._default_generate_fn)
+        worker.set_generate_fn(worker._default_batch_generate_fn)
 
-    assert calls == ["abc123-LLMROW-Sheet1-4"]
-    assert mock_save.await_count == 1
-    assert result.records == 3  # 2 resumed + 1 fresh
+    assert len(calls) == 2
+    assert mock_save.await_count == 2
+    assert result.records == 3  # 1 resumed + 2 fresh
 
 
 @pytest.mark.asyncio

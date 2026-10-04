@@ -40,179 +40,6 @@ def _extraction(**overrides):
     return extraction
 
 
-# --- structured output contract (§6, §11) -------------------------------------
-
-
-class TestParseValidation:
-    def test_valid_structured_response(self):
-        extraction, errors = llm.parse_llm_extraction(json.dumps(_valid_payload()))
-        assert errors == []
-        assert extraction is not None
-        assert extraction.symptom == "Bed vibration"
-        assert extraction.candidate_causes[0].basis == "LLM_INFERRED"
-
-    def test_markdown_fences_tolerated(self):
-        raw = "```json\n" + json.dumps(_valid_payload()) + "\n```"
-        extraction, errors = llm.parse_llm_extraction(raw)
-        assert extraction is not None, errors
-
-    def test_malformed_json_rejected(self):
-        extraction, errors = llm.parse_llm_extraction("{not json")
-        assert extraction is None
-        assert any("malformed_json" in e for e in errors)
-
-    def test_empty_response_rejected(self):
-        for raw in (None, "", "   ", "```\n```"):
-            extraction, errors = llm.parse_llm_extraction(raw)
-            assert extraction is None
-            assert errors == ["empty_response"]
-
-    def test_top_level_list_rejected(self):
-        extraction, errors = llm.parse_llm_extraction(json.dumps([_item("x")]))
-        assert extraction is None
-        assert any("unexpected_output_shape" in e for e in errors)
-
-    def test_missing_required_field_rejected(self):
-        payload = _valid_payload()
-        del payload["corrective_actions"]
-        extraction, errors = llm.parse_llm_extraction(json.dumps(payload))
-        assert extraction is None
-        assert errors == ["missing_required_field: corrective_actions"]
-
-    def test_missing_symptom_key_rejected(self):
-        payload = _valid_payload()
-        del payload["symptom"]
-        extraction, errors = llm.parse_llm_extraction(json.dumps(payload))
-        assert extraction is None
-        assert errors == ["missing_required_field: symptom"]
-
-    def test_invalid_basis_rejected(self):
-        payload = _valid_payload(
-            findings=[{"text": "x", "basis": "HISTORICAL_FACT"}]
-        )
-        extraction, errors = llm.parse_llm_extraction(json.dumps(payload))
-        assert extraction is None
-        assert any("invalid_enum" in e and "basis" in e for e in errors)
-
-    def test_empty_item_text_rejected(self):
-        payload = _valid_payload(findings=[{"text": "  ", "basis": "DATA_SUPPORTED"}])
-        extraction, errors = llm.parse_llm_extraction(json.dumps(payload))
-        assert extraction is None
-        assert any("text is empty" in e for e in errors)
-
-    def test_explicit_empty_lists_are_valid_unknown(self):
-        payload = _valid_payload(
-            symptom=None,
-            candidate_causes=[],
-            corrective_actions=[],
-        )
-        extraction, errors = llm.parse_llm_extraction(json.dumps(payload))
-        assert extraction is not None, errors
-        assert extraction.symptom is None
-        assert extraction.corrective_actions == []
-
-    def test_extra_fields_warn_not_fail(self):
-        payload = _valid_payload(some_future_field="kept-out")
-        extraction, errors = llm.parse_llm_extraction(json.dumps(payload))
-        assert extraction is not None
-        assert errors == ["warning: unexpected_field_ignored: some_future_field"]
-
-    def test_basis_values_never_collapsed(self):
-        extraction, _ = llm.parse_llm_extraction(json.dumps(_valid_payload()))
-        assert extraction is not None
-        bases = {item.basis for item in extraction.findings + extraction.candidate_causes}
-        assert bases == {"DATA_SUPPORTED", "LLM_INFERRED"}
-
-
-# --- semantic rules (§8) -------------------------------------------------------
-
-
-class TestSemanticRules:
-    def test_standalone_test_note_is_verification_not_action(self):
-        extraction = _extraction(corrective_actions=[_item("تست شد")])
-        ruled = llm.apply_semantic_rules(extraction)
-        assert ruled.corrective_actions == []
-        assert [item.text for item in ruled.verification_steps] == [
-            "Test run OK",
-            "تست شد",
-        ]
-
-    def test_test_and_handover_produces_verification_plus_event(self):
-        extraction = _extraction(corrective_actions=[_item("تست و تحویل شد")])
-        ruled = llm.apply_semantic_rules(extraction)
-        assert ruled.corrective_actions == []
-        assert "تست و تحویل شد" in [item.text for item in ruled.verification_steps]
-        assert "تست و تحویل شد" in [item.text for item in ruled.post_repair_events]
-
-    def test_pure_handover_is_event_not_action(self):
-        extraction = _extraction(corrective_actions=[_item("دستگاه تحویل شد")])
-        ruled = llm.apply_semantic_rules(extraction)
-        assert ruled.corrective_actions == []
-        assert [item.text for item in ruled.post_repair_events] == ["دستگاه تحویل شد"]
-
-    def test_outcome_only_is_verification_not_action(self):
-        extraction = _extraction(corrective_actions=[_item("مشکل رفع شد")])
-        ruled = llm.apply_semantic_rules(extraction)
-        assert ruled.corrective_actions == []
-        assert "مشکل رفع شد" in [item.text for item in ruled.verification_steps]
-
-    def test_genuine_repair_action_survives(self):
-        extraction = _extraction(
-            corrective_actions=[_item("پالت تعویض و سوئیچ تنظیم گردید")]
-        )
-        ruled = llm.apply_semantic_rules(extraction)
-        assert [item.text for item in ruled.corrective_actions] == [
-            "پالت تعویض و سوئیچ تنظیم گردید"
-        ]
-
-    def test_provenance_preserved_through_refile(self):
-        extraction = _extraction(
-            corrective_actions=[_item("تست شد", basis="LLM_INFERRED")]
-        )
-        ruled = llm.apply_semantic_rules(extraction)
-        moved = next(
-            item for item in ruled.verification_steps if item.text == "تست شد"
-        )
-        assert moved.basis == "LLM_INFERRED"
-
-    def test_prompt_encodes_generation_rules(self):
-        system, user = llm.build_extraction_prompt("symptom: noise", "RID-1")
-        for rule in (
-            "ONLY the supplied source material",
-            "Do not invent components",
-            "Do not invent measurements",
-            "NOT a corrective action",
-            "verification step, never a corrective action",
-            "DATA_SUPPORTED",
-            "LLM_INFERRED",
-            "JSON ONLY",
-            "insufficient",
-        ):
-            assert rule in system
-        assert "RID-1" in user and "symptom: noise" in user
-
-
-# --- deterministic record extraction -------------------------------------------
-
-
-class TestRecordExtraction:
-    def test_source_text_verbatim_and_skips_empties(self):
-        text = llm.build_record_source_text(
-            ["عیب", "اقدام", "خالی"], ["لرزش بستر", "  ", None]
-        )
-        assert text == "عیب: لرزش بستر"
-
-    def test_stable_record_ids_not_filenames(self):
-        inputs = llm.extract_record_inputs(
-            "abc123", "Sheet1", ["a", "b"], [["x", "y"], ["", None], ["z", "w"]]
-        )
-        assert [i["source_record_id"] for i in inputs] == [
-            "abc123-LLMROW-Sheet1-2",
-            "abc123-LLMROW-Sheet1-4",
-        ]
-        assert inputs[0]["source_text"] == "a: x\nb: y"
-
-
 # --- build lifecycle + idempotency (§4, §12, §20) --------------------------------
 
 
@@ -320,6 +147,10 @@ class TestBuildLifecycle:
 # --- source isolation + guide assembly (§5, §15–§18) -------------------------------
 
 
+def _item(text, basis="DATA_SUPPORTED", quote=None):
+    return {"text": text, "basis": basis, "source_quote": quote}
+
+
 def _stored_record(build="llm_knowledge_build:1", report="repair_report:a", rid="k-ROW-2"):
     return {
         "id": "llm_knowledge_record:1",
@@ -353,6 +184,8 @@ class TestGuideAssembly:
                 assert "source_report_id" in query
                 assert str(params.get("sid")) == "repair_report:a"
                 return [record_a]
+            if "FROM llm_stage_b_guide" in query:
+                return []
             raise AssertionError(f"unexpected query: {query}")
 
         internal = {"id": "repair_report:a", "filename": "Machine Bed.pdf"}
@@ -365,6 +198,7 @@ class TestGuideAssembly:
         assert guide["build_id"] == "llm_knowledge_build:1"
         assert guide["source_deleted"] is False
         assert [r["source_record_id"] for r in guide["records"]] == ["k-ROW-2"]
+        assert guide["final_guides"] == []
         assert guide["warnings"] == []
 
     @pytest.mark.asyncio
@@ -376,6 +210,8 @@ class TestGuideAssembly:
                 return [build]
             if "FROM llm_knowledge_record" in query:
                 return []
+            if "FROM llm_stage_b_guide" in query:
+                return []
             raise AssertionError(f"unexpected query: {query}")
 
         internal = {"id": "repair_report:b", "filename": "Other.pdf"}
@@ -385,6 +221,7 @@ class TestGuideAssembly:
         ):
             guide = await llm.assemble_llm_guide("llm_knowledge_build:1", "repair_report:b")
         assert guide["records"] == []
+        assert guide["final_guides"] == []
         assert guide["warnings"] == ["no_records_for_source"]
 
     @pytest.mark.asyncio
@@ -397,6 +234,8 @@ class TestGuideAssembly:
                 return [build]
             if "FROM llm_knowledge_record" in query:
                 return [record_a]
+            if "FROM llm_stage_b_guide" in query:
+                return []
             raise AssertionError(f"unexpected query: {query}")
 
         with patch.object(llm, "repo_query", new=AsyncMock(side_effect=_repo)), patch(

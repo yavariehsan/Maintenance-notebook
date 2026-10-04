@@ -29,9 +29,12 @@ All SurrealDB access goes through ``repo_query`` (single mock seam).
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
+import re
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from loguru import logger
 from pydantic import BaseModel, Field, ValidationError
@@ -47,7 +50,60 @@ TABLE_BUILD = "llm_knowledge_build"
 TABLE_RECORD = "llm_knowledge_record"
 
 #: Prompt/system contract version recorded on every build for audit.
-PROMPT_VERSION = "m12-v1"
+PROMPT_VERSION = "insight-v1"
+
+#: Default output budgets (brief §10). Explicit > env > default; the
+#: input token budget (llm_batching) packs requests, these cap responses.
+#: Stage B's guide is substantially longer than Stage A evidence JSON.
+LLM_STAGE_A_MAX_TOKENS_DEFAULT = 8000
+LLM_STAGE_B_MAX_TOKENS_DEFAULT = 12000
+
+
+def _resolve_positive_int(
+    env_name: str, explicit: Optional[int], default: int
+) -> int:
+    if explicit is not None and isinstance(explicit, int) and explicit > 0:
+        return explicit
+    raw = os.environ.get(env_name, "").strip()
+    if raw:
+        try:
+            value = int(raw)
+            if value > 0:
+                return value
+        except ValueError:
+            pass
+    return default
+
+
+def resolve_generation_budgets(
+    stage_a_max_tokens: Optional[int] = None,
+    stage_b_max_tokens: Optional[int] = None,
+) -> Dict[str, int]:
+    """Explicit output budgets for both stages (auditable, env-tunable)."""
+    return {
+        "stage_a": _resolve_positive_int(
+            "LLM_STAGE_A_MAX_TOKENS", stage_a_max_tokens,
+            LLM_STAGE_A_MAX_TOKENS_DEFAULT),
+        "stage_b": _resolve_positive_int(
+            "LLM_STAGE_B_MAX_TOKENS", stage_b_max_tokens,
+            LLM_STAGE_B_MAX_TOKENS_DEFAULT),
+    }
+
+
+def build_stage_a_preflight_prompt() -> Tuple[str, str, List[str]]:
+    """One-record Stage A probe for the preflight gate (M14 §7 shape)."""
+    record_id = "preflight-LLMROW-Sheet1-2"
+    fields = {
+        "کد فرایندی": "M3",
+        "شرح درخواست": "مشکل در تعویض ابزار (تعویض ابزار)",
+        "شرح تعمیر": "با nck مشکل حل شد",
+        "مکانیزم خرابی": "",
+        "دلیل بروز عیب": "",
+        "حالت خرابی": "مشکل در تعویض ابزار (تعویض ابزار)",
+    }
+    records = [{"source_record_id": record_id, "fields": fields}]
+    system, user = build_stage_a_prompt("M3", fields["حالت خرابی"], records)
+    return system, user, [record_id]
 
 #: Build lifecycle states (mirrors the repair-run vocabulary + partial).
 BUILD_QUEUED = "queued"
@@ -83,359 +139,944 @@ KNOWLEDGE_SOURCE_LLM = "LLM"
 COMMAND_NAME = "generate_llm_knowledge"
 
 
-# --- structured output contract (§6) ----------------------------------------
+def _excel_row_of(source_record_id: str) -> int:
+    try:
+        return int(str(source_record_id).rsplit("-", 1)[1])
+    except (ValueError, IndexError):
+        return 0
 
 
-class LLMItem(BaseModel):
-    """One extracted statement with explicit provenance."""
-
-    text: str = Field(..., description="Extracted statement, verbatim-ish")
-    basis: Literal["DATA_SUPPORTED", "LLM_INFERRED"] = Field(
-        ..., description="Historical record states it vs LLM derived it"
-    )
-    source_quote: Optional[str] = Field(
-        None, description="Supporting source span, when explicitly stated"
-    )
+# --- Stage A output contract (two-stage guide generation) ----------------------
 
 
-class LLMExtraction(BaseModel):
-    """Validated structured extraction for one source record (§6).
+class StageARecordEvidence(BaseModel):
+    """Per-record evidence within one Stage A package (brief §5.14)."""
 
-    Empty/unknown is explicit: ``symptom`` may be null and any list may
-    be empty — the LLM must return those instead of inventing facts.
-    """
-
-    symptom: Optional[str] = None
-    findings: List[LLMItem] = Field(default_factory=list)
-    candidate_causes: List[LLMItem] = Field(default_factory=list)
-    diagnostic_steps: List[LLMItem] = Field(default_factory=list)
-    corrective_actions: List[LLMItem] = Field(default_factory=list)
-    verification_steps: List[LLMItem] = Field(default_factory=list)
-    post_repair_events: List[LLMItem] = Field(
-        default_factory=list,
-        description="Handover/outcome history re-filed by semantic post-rules",
-    )
+    record_id: str
+    primary_focus: str = ""
+    symptoms: List[str] = Field(default_factory=list)
+    observations: List[str] = Field(default_factory=list)
+    mechanism: str = ""
+    cause: str = ""
+    diagnostic_checks: List[str] = Field(default_factory=list)
+    corrective_actions: List[str] = Field(default_factory=list)
+    verification: List[str] = Field(default_factory=list)
+    unresolved: bool = False
 
 
-EXTRACTION_LIST_FIELDS = (
-    "findings",
-    "candidate_causes",
-    "diagnostic_steps",
-    "corrective_actions",
-    "verification_steps",
+class StageAFocusCategory(BaseModel):
+    """Primary failure-focus category with historical shares (§5.10)."""
+
+    name: str = ""
+    record_ids: List[str] = Field(default_factory=list)
+    record_count: int = 0
+    percentage: float = 0.0
+    subsystems: List[str] = Field(default_factory=list)
+    symptoms: List[str] = Field(default_factory=list)
+    components: List[str] = Field(default_factory=list)
+    historical_actions: List[str] = Field(default_factory=list)
+    verification_patterns: List[str] = Field(default_factory=list)
+
+
+class StageAEvidencePackage(BaseModel):
+    """Validated Stage A evidence package for one batch (brief §5.14)."""
+
+    equipment: str = ""
+    failure_mode: str = ""
+    record_count: int = 0
+    records: List[StageARecordEvidence] = Field(default_factory=list)
+    focus_categories: List[StageAFocusCategory] = Field(default_factory=list)
+    recurring_patterns: List[str] = Field(default_factory=list)
+    unresolved_cases: List[str] = Field(default_factory=list)
+
+
+STAGE_A_TOP_KEYS = (
+    "equipment",
+    "failure_mode",
+    "record_count",
+    "records",
+    "focus_categories",
+    "recurring_patterns",
+    "unresolved_cases",
 )
 
 
-# --- LLM prompt / system contract (§9) ---------------------------------------
+def _stage_a_str_list(value: Any, where: str) -> tuple:
+    """Validate an optional list-of-strings field."""
+    if value is None:
+        return [], None
+    if not isinstance(value, list):
+        return None, f"invalid_field: {where} is not a list"
+    cleaned = []
+    for entry in value:
+        if not isinstance(entry, str):
+            return None, f"invalid_field: {where} has a non-string entry"
+        cleaned.append(entry)
+    return cleaned, None
 
 
-def build_extraction_prompt(source_text: str, source_record_id: str) -> Tuple[str, str]:
-    """System + user prompt for one record's structured extraction.
+def parse_stage_a_evidence(
+    raw: Any, batch_member_ids: List[str]
+) -> Tuple[Optional[StageAEvidencePackage], List[str]]:
+    """Parse + validate one Stage A response (never raises on bad content).
 
-    Encodes the generation rules (§9) and the engine's semantic
-    distinctions (§8): TechnicalVerification vs RepairAction,
-    PostRepairEvent vs RepairAction, standalone ``تست شد`` as
-    verification only, and closure/handover never as a corrective
-    action.
+    Fail-closed: malformed JSON (fences/prose NOT stripped — the contract
+    is JSON only), missing top-level keys, non-member ``record_id``
+    references, wrong shapes, or category counts exceeding the batch size
+    all yield ``(None, errors)``. Unknown top-level keys are tolerated
+    silently. Percentages are kept as returned — never rewritten.
     """
-    system = (
-        "You extract structured troubleshooting knowledge from a single "
-        "historical maintenance record. Rules:\n"
-        "1. Use ONLY the supplied source material. Never use outside knowledge.\n"
-        "2. Do not invent components, parts, or equipment names.\n"
-        "3. Do not invent measurements, parameters, or values.\n"
-        "4. Do not invent corrective actions the source does not support.\n"
-        "5. Administrative closure text (e.g. تحویل شد, تحویل گردید, "
-        "تست و تحویل شد as handover, مشکل رفع شد, برطرف گردید) is NOT a "
-        "corrective action. A standalone test note (تست شد) is a "
-        "verification step, never a corrective action.\n"
-        "6. Preserve source references: set source_quote to the exact "
-        "source span when the information is explicitly stated.\n"
-        "7. Mark every item DATA_SUPPORTED (explicitly stated in the "
-        "source) or LLM_INFERRED (derived from context, not stated). "
-        "Never label an inference as DATA_SUPPORTED.\n"
-        "8. Return structured JSON ONLY, matching the schema. No prose, "
-        "no markdown fences, no commentary.\n"
-        "9. Where evidence is insufficient, return null (symptom) or [] "
-        "(lists), or an item with basis LLM_INFERRED — never hallucinate "
-        "a fact to fill the schema."
-    )
-    schema = (
-        '{"symptom": string|null, "findings": [{"text": string, '
-        '"basis": "DATA_SUPPORTED"|"LLM_INFERRED", "source_quote": '
-        "string|null}], "
-        '"candidate_causes": [...], "diagnostic_steps": [...], '
-        '"corrective_actions": [...], "verification_steps": [...]}'
-    )
-    user = (
-        f"Source record {source_record_id}:\n{source_text}\n\n"
-        f"Return JSON matching this schema:\n{schema}"
-    )
-    return system, user
-
-
-# --- validation layer (§11) ---------------------------------------------------
-
-
-def _strip_fences(raw: str) -> str:
-    text = raw.strip()
-    if text.startswith("```"):
-        lines = text.splitlines()
-        # Drop opening fence (``` or ```json) and trailing fence.
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-        while lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        text = "\n".join(lines).strip()
-    return text
-
-
-def parse_llm_extraction(raw: Any) -> Tuple[Optional[LLMExtraction], List[str]]:
-    """Parse + validate one LLM response (never raises on bad content).
-
-    Returns ``(extraction, errors)``: ``extraction`` is None when the
-    response is malformed, misses required fields, carries invalid enum
-    values, has the wrong shape, or is empty — the caller persists the
-    errors traceably on the record instead of discarding them silently.
-    Extra top-level keys are tolerated (forward compatibility) and
-    reported as warnings inside ``errors`` with a ``warning:`` prefix
-    so they stay visible without failing the record.
-    """
-    errors: List[str] = []
-    if raw is None:
-        return None, ["empty_response"]
+    members = set(str(item) for item in batch_member_ids or [])
     if not isinstance(raw, str):
-        return None, ["unexpected_output_shape: response is not text"]
-    text = _strip_fences(raw)
-    if not text:
         return None, ["empty_response"]
     try:
-        parsed = json.loads(text)
+        parsed = json.loads(raw)
     except (ValueError, TypeError) as e:
         return None, [f"malformed_json: {e}"]
-    if isinstance(parsed, list):
-        return None, ["unexpected_output_shape: top-level list, expected object"]
     if not isinstance(parsed, dict):
         return None, ["unexpected_output_shape: expected JSON object"]
-    if "symptom" not in parsed:
-        return None, ["missing_required_field: symptom"]
-    for field in EXTRACTION_LIST_FIELDS:
-        if field not in parsed:
-            return None, [f"missing_required_field: {field}"]
-        if parsed[field] is not None and not isinstance(parsed[field], list):
-            return None, [f"unexpected_output_shape: {field} is not a list"]
-    known = {"symptom"} | set(EXTRACTION_LIST_FIELDS)
-    for key in sorted(set(parsed) - known):
-        errors.append(f"warning: unexpected_field_ignored: {key}")
-    symptom = parsed.get("symptom")
-    if symptom is not None and not isinstance(symptom, str):
-        return None, ["invalid_field: symptom is not a string"]
-    if isinstance(symptom, str) and not symptom.strip():
-        symptom = None
-    items: Dict[str, List[LLMItem]] = {}
-    for field in EXTRACTION_LIST_FIELDS:
-        validated: List[LLMItem] = []
-        for index, entry in enumerate(parsed.get(field) or []):
-            if not isinstance(entry, dict):
-                return None, [f"invalid_field: {field}[{index}] is not an object"]
-            entry_text = entry.get("text")
-            if not isinstance(entry_text, str) or not entry_text.strip():
-                return None, [f"invalid_field: {field}[{index}].text is empty"]
-            basis = entry.get("basis")
-            if basis not in VALID_BASES:
-                return None, [
-                    f"invalid_enum: {field}[{index}].basis={basis!r} "
-                    f"(expected DATA_SUPPORTED or LLM_INFERRED)"
-                ]
-            quote = entry.get("source_quote")
-            if quote is not None and not isinstance(quote, str):
-                return None, [
-                    f"invalid_field: {field}[{index}].source_quote is not a string"
-                ]
-            validated.append(
-                LLMItem(
-                    text=entry_text.strip(),
-                    basis=basis,
-                    source_quote=quote.strip() if isinstance(quote, str) and quote.strip() else None,
-                )
-            )
-        items[field] = validated
+    for key in STAGE_A_TOP_KEYS:
+        if key not in parsed:
+            return None, [f"missing_required_field: {key}"]
+    equipment = parsed.get("equipment")
+    failure_mode = parsed.get("failure_mode")
+    if not isinstance(equipment, str) or not isinstance(failure_mode, str):
+        return None, ["invalid_field: equipment/failure_mode must be strings"]
+    record_count = parsed.get("record_count")
+    if not isinstance(record_count, int) or isinstance(record_count, bool):
+        return None, ["invalid_field: record_count is not an integer"]
+    if not isinstance(parsed.get("records"), list):
+        return None, ["invalid_field: records is not a list"]
+    records: List[StageARecordEvidence] = []
+    for index, entry in enumerate(parsed["records"]):
+        where = f"records[{index}]"
+        if not isinstance(entry, dict):
+            return None, [f"invalid_field: {where} is not an object"]
+        rid = entry.get("record_id")
+        if not isinstance(rid, str) or not rid.strip() or rid not in members:
+            return None, [
+                f"invalid_field: {where}.record_id is not a batch member"
+            ]
+        checked: Dict[str, Any] = {"record_id": rid}
+        for field in ("symptoms", "observations", "diagnostic_checks",
+                      "corrective_actions", "verification"):
+            cleaned, error = _stage_a_str_list(
+                entry.get(field, []), f"{where}.{field}")
+            if error is not None:
+                return None, [error]
+            checked[field] = cleaned
+        for field in ("primary_focus", "mechanism", "cause"):
+            value = entry.get(field, "")
+            if value is None:
+                value = ""
+            if not isinstance(value, str):
+                return None, [f"invalid_field: {where}.{field} is not a string"]
+            checked[field] = value
+        unresolved = entry.get("unresolved", False)
+        if not isinstance(unresolved, bool):
+            return None, [f"invalid_field: {where}.unresolved is not a boolean"]
+        checked["unresolved"] = unresolved
+        try:
+            records.append(StageARecordEvidence(**checked))
+        except ValidationError as e:
+            return None, [f"invalid_field: {e}"]
+    if not isinstance(parsed.get("focus_categories"), list):
+        return None, ["invalid_field: focus_categories is not a list"]
+    categories: List[StageAFocusCategory] = []
+    counted = 0
+    for index, entry in enumerate(parsed["focus_categories"]):
+        where = f"focus_categories[{index}]"
+        if not isinstance(entry, dict):
+            return None, [f"invalid_field: {where} is not an object"]
+        name = entry.get("name", "")
+        if name is None:
+            name = ""
+        if not isinstance(name, str):
+            return None, [f"invalid_field: {where}.name is not a string"]
+        ref_ids = entry.get("record_ids", [])
+        if not isinstance(ref_ids, list) or any(
+                not isinstance(item, str) for item in ref_ids):
+            return None, [f"invalid_field: {where}.record_ids is not a string list"]
+        unknown = [item for item in ref_ids if item not in members]
+        if unknown:
+            return None, [
+                f"invalid_field: {where}.record_id references outside the batch"
+            ]
+        count = entry.get("record_count", 0)
+        if not isinstance(count, int) or isinstance(count, bool):
+            return None, [f"invalid_field: {where}.record_count is not an integer"]
+        percentage = entry.get("percentage", 0)
+        if isinstance(percentage, bool) or not isinstance(percentage, (int, float)):
+            return None, [f"invalid_field: {where}.percentage is not a number"]
+        checked_cat: Dict[str, Any] = {
+            "name": name, "record_ids": list(ref_ids),
+            "record_count": count, "percentage": float(percentage),
+        }
+        for field in ("subsystems", "symptoms", "components",
+                      "historical_actions", "verification_patterns"):
+            cleaned, error = _stage_a_str_list(
+                entry.get(field, []), f"{where}.{field}")
+            if error is not None:
+                return None, [error]
+            checked_cat[field] = cleaned
+        counted += count
+        try:
+            categories.append(StageAFocusCategory(**checked_cat))
+        except ValidationError as e:
+            return None, [f"invalid_field: {e}"]
+    if counted > len(members):
+        return None, [
+            f"count_inconsistency: category record_counts sum to {counted} "
+            f"over {len(members)} batch records"
+        ]
+    recurring, error = _stage_a_str_list(
+        parsed.get("recurring_patterns", []), "recurring_patterns")
+    if error is not None:
+        return None, [error]
+    unresolved_cases, error = _stage_a_str_list(
+        parsed.get("unresolved_cases", []), "unresolved_cases")
+    if error is not None:
+        return None, [error]
     try:
-        extraction = LLMExtraction(symptom=symptom.strip() if symptom else None, **items)
+        package = StageAEvidencePackage(
+            equipment=equipment, failure_mode=failure_mode,
+            record_count=record_count, records=records,
+            focus_categories=categories, recurring_patterns=recurring,
+            unresolved_cases=unresolved_cases,
+        )
     except ValidationError as e:
         return None, [f"invalid_field: {e}"]
-    return extraction, errors
+    return package, []
 
 
-# --- semantic post-rules (§8: engine semantics stay authoritative) -------------
+def parse_stage_a_preflight(raw: Any) -> Tuple[bool, List[str]]:
+    """Minimal provider-capability check for preflight (never semantic).
 
-#: Closure/handover/outcome phrasing that is history, never a repair
-#: action. Mirrors the engine's history-only phrases
-#: (stages/repairs.py ``_HISTORY_ONLY_PHRASES`` + ``_emit_standalone_history``):
-#: standalone تست شد → verification; تست و تحویل شد → verification +
-#: handover event; تحویل* → handover; برطرف/رفع outcome → verification.
-_CLOSURE_MARKERS = (
-    "تحویل شد",
-    "تحویل گردید",
-    "تحویل داده شد",
-    "تست و تحویل شد",
-    "تست و تحویل گردید",
-    "مشکل رفع شد",
-    "مشکل برطرف شد",
-    "برطرف گردید",
-    "برطرف شد",
-    "رفع گردید",
-    "تست شد",
-)
-
-#: Repair verbs: when none is present alongside a closure marker, the
-#: sentence carries no corrective content (deterministic safety net —
-#: the prompt already forbids closure-as-action, this enforces it).
-_REPAIR_VERBS = (
-    "تعویض",
-    "تعويض",
-    "تعمیر",
-    "تنظیم",
-    "رگلاژ",
-    "جوش",
-    "سرویس",
-    "روغن",
-    "گریس",
-    "تمیز",
-    "شست",
-    "بازدید",
-    "تعمییر",
-    "نصب",
-    "مونتاژ",
-    "دمونتاژ",
-    "تراش",
-    "سنگ",
-    "جایگزین",
-    "آچار",
-    "بستن",
-    "باز کردن",
-    "لحیم",
-    "سیم",
-    "کابل",
-    "بلبرینگ",
-    "یاتاقان",
-    "فیلتر",
-    "تسمه",
-    "پمپ",
-    "موتور",
-    "گیربکس",
-    "شیر",
-    "سنسور",
-    "کنتاکتور",
-    "فیوز",
-    "برد",
-)
-
-
-def _contains_any(text: str, phrases: Tuple[str, ...]) -> bool:
-    return any(marker in text for marker in phrases)
-
-
-def apply_semantic_rules(extraction: LLMExtraction) -> LLMExtraction:
-    """Enforce engine semantics on a validated extraction (pure).
-
-    - A corrective action that is only closure/handover/test phrasing
-      (no repair verb) is NOT a corrective action: test phrasing moves
-      to ``verification_steps`` (standalone ``تست شد`` → Technical
-      Verification), handover/outcome phrasing moves to
-      ``post_repair_events`` — the record keeps the history, nothing is
-      silently dropped.
-    - Never invents: only re-files the LLM's own items.
+    Verifies only that the provider/model returned a structurally
+    parseable JSON object shaped like evidence: a ``records`` list with
+    at least one entry carrying a string ``record_id``. Everything else
+    — array contents, categories, percentages, unresolved cases — is
+    deliberately ignored: preflight tests that the generation path works
+    (connectivity, model resolution, JSON mode, parsing), not that an
+    arbitrary sample satisfies the full Stage A evidence semantics.
+    Real Stage A outputs are still validated by ``parse_stage_a_evidence``.
     """
-    kept_actions: List[LLMItem] = []
-    verifications = list(extraction.verification_steps)
-    events = list(extraction.post_repair_events)
-    for action in extraction.corrective_actions:
-        text = action.text
-        if _contains_any(text, _CLOSURE_MARKERS) and not _contains_any(
-            text, _REPAIR_VERBS
-        ):
-            has_test = "تست" in text
-            has_handover = "تحویل" in text
-            has_outcome = _contains_any(text, ("رفع", "برطرف", "مشکل"))
-            # Engine parity: standalone تست شد → verification only;
-            # تست و تحویل شد → verification + handover event; pure
-            # handover → event only; رفع/برطرف outcome → verification.
-            if has_test or has_outcome or not has_handover:
-                verifications.append(
-                    LLMItem(
-                        text=text,
-                        basis=action.basis,
-                        source_quote=action.source_quote,
-                    )
-                )
-            if has_handover:
-                events.append(
-                    LLMItem(
-                        text=text,
-                        basis=action.basis,
-                        source_quote=action.source_quote,
-                    )
-                )
+    if not isinstance(raw, str):
+        return False, ["empty_response"]
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError) as e:
+        return False, [f"malformed_json: {e}"]
+    if not isinstance(parsed, dict):
+        return False, ["unexpected_output_shape: expected JSON object"]
+    records = parsed.get("records")
+    if records is None:
+        return False, ["missing_required_field: records"]
+    if not isinstance(records, list) or not records:
+        return False, ["invalid_field: records must be a non-empty list"]
+    for index, entry in enumerate(records):
+        if not isinstance(entry, dict):
+            return False, [f"invalid_field: records[{index}] is not an object"]
+        rid = entry.get("record_id")
+        if not isinstance(rid, str) or not rid.strip():
+            return False, [f"invalid_field: records[{index}].record_id is not a string"]
+    return True, []
+
+
+
+
+# --- Stage A six-field contract (two-stage guide generation) -------------------
+#
+# Stage A receives EXACTLY six workbook fields per record. No other column
+# may enter the prompt. Internal record IDs ride alongside for provenance;
+# they are metadata, not a seventh field.
+
+
+#: The six Stage A source fields, in contract order (brief §2).
+STAGE_A_FIELDS: tuple = (
+    "کد فرایندی",
+    "شرح درخواست",
+    "شرح تعمیر",
+    "مکانیزم خرابی",
+    "دلیل بروز عیب",
+    "حالت خرابی",
+)
+
+
+def extract_stage_a_values(
+    headers: List[str], values: List[Any]
+) -> Dict[str, str]:
+    """Six faithful field values for one workbook row.
+
+    Missing columns, ``None`` and blanks all yield ``""`` — never a
+    replacement, never a rewrite. Values are stripped, not normalized.
+    """
+    padded = list(values[: len(headers)])
+    padded.extend([None] * (len(headers) - len(padded)))
+    positional: Dict[str, Any] = {}
+    for pos, header in enumerate(headers):
+        label = (header or "").strip()
+        if label and label not in positional:
+            positional[label] = padded[pos]
+    extracted: Dict[str, str] = {}
+    for field in STAGE_A_FIELDS:
+        raw = positional.get(field)
+        if raw is None:
+            extracted[field] = ""
             continue
-        kept_actions.append(action)
-    return LLMExtraction(
-        symptom=extraction.symptom,
-        findings=list(extraction.findings),
-        candidate_causes=list(extraction.candidate_causes),
-        diagnostic_steps=list(extraction.diagnostic_steps),
-        corrective_actions=kept_actions,
-        verification_steps=verifications,
-        post_repair_events=events,
+        extracted[field] = str(raw)
+    return extracted
+
+
+def serialize_stage_a_record(values: Dict[str, str]) -> str:
+    """Six ``header: value`` lines in contract order; blanks stay empty."""
+    return "\n".join(f"{field}: {values.get(field, '')}" for field in STAGE_A_FIELDS)
+
+
+STAGE_A_SYSTEM_PROMPT = (
+    "You are a maintenance-history analysis engine.\n"
+    "\n"
+    "Your task is to analyze historical maintenance records for ONE equipment unit and ONE failure mode and extract evidence that will later be used to construct a practical maintenance troubleshooting guide.\n"
+    "\n"
+    "The supplied historical records are the ONLY factual source of truth.\n"
+    "\n"
+    "## 1. SOURCE OF TRUTH\n"
+    "\n"
+    "Use only the information explicitly contained in the supplied records.\n"
+    "\n"
+    "Do not use:\n"
+    "\n"
+    "* general engineering knowledge;\n"
+    "* textbook knowledge;\n"
+    "* manufacturer knowledge;\n"
+    "* internet knowledge;\n"
+    "* knowledge about similar machines;\n"
+    "* knowledge from other equipment;\n"
+    "* knowledge from other failure modes;\n"
+    "* Text Mining results;\n"
+    "* canonicalized causes or actions;\n"
+    "* assumptions about how the machine should normally work.\n"
+    "\n"
+    "Do not invent components, sensors, mechanisms, alarms, parameters, measurements, thresholds, causes, repair actions, or verification procedures.\n"
+    "\n"
+    "## 2. INPUT FIELDS\n"
+    "\n"
+    "Every historical record contains exactly these six source fields:\n"
+    "\n"
+    "1. کد فرایندی\n"
+    "2. شرح درخواست\n"
+    "3. شرح تعمیر\n"
+    "4. مکانیزم خرابی\n"
+    "5. دلیل بروز عیب\n"
+    "6. حالت خرابی\n"
+    "\n"
+    "Treat the values exactly as historical evidence.\n"
+    "\n"
+    "The semantic role of each field is:\n"
+    "\n"
+    "* کد فرایندی = equipment identity\n"
+    "* شرح درخواست = reported symptom or problem\n"
+    "* شرح تعمیر = observed condition, diagnostic activity, corrective action, adjustment, replacement, test, or outcome\n"
+    "* مکانیزم خرابی = recorded technical failure mechanism or affected subsystem\n"
+    "* دلیل بروز عیب = recorded historical cause classification\n"
+    "* حالت خرابی = failure-mode scope\n"
+    "\n"
+    "## 3. RECORD-LEVEL EVIDENCE\n"
+    "\n"
+    "For every record, identify:\n"
+    "\n"
+    "* reported symptom(s);\n"
+    "* observed condition(s);\n"
+    "* affected subsystem/component;\n"
+    "* explicit cause;\n"
+    "* diagnostic checks;\n"
+    "* corrective action;\n"
+    "* adjustment;\n"
+    "* replacement;\n"
+    "* verification/test;\n"
+    "* unresolved status;\n"
+    "* any explicit alarm, sensor, pocket, tool, position, parameter, or other technical identifier.\n"
+    "\n"
+    "Preserve uncertainty.\n"
+    "\n"
+    "If the record says that no fault was found, do not convert that into a confirmed cause.\n"
+    "\n"
+    "If the record says that the cause was unknown or not identified, preserve it as unresolved.\n"
+    "\n"
+    "## 4. CROSS-RECORD SYNTHESIS\n"
+    "\n"
+    "Analyze all records in this batch collectively.\n"
+    "\n"
+    "Identify recurring:\n"
+    "\n"
+    "* symptoms;\n"
+    "* affected subsystems;\n"
+    "* components;\n"
+    "* causes;\n"
+    "* diagnostic checks;\n"
+    "* corrective actions;\n"
+    "* verification patterns.\n"
+    "\n"
+    "Semantically equivalent observations may be consolidated.\n"
+    "\n"
+    "Do not merge technically different mechanisms merely because they appear related.\n"
+    "\n"
+    "## 5. HISTORICAL EVIDENCE VS INFERENCE\n"
+    "\n"
+    "Classify every extracted fact as one of:\n"
+    "\n"
+    "DATA_SUPPORTED\n"
+    "\n"
+    "* explicitly stated in at least one supplied record.\n"
+    "\n"
+    "CROSS_RECORD_SUPPORTED\n"
+    "\n"
+    "* a recurring pattern supported by multiple supplied records.\n"
+    "\n"
+    "OPERATIONAL_SYNTHESIS\n"
+    "\n"
+    "* an ordering or troubleshooting sequence created by organizing documented historical checks/actions without introducing new technical facts.\n"
+    "\n"
+    "UNRESOLVED\n"
+    "\n"
+    "* the records do not establish a cause.\n"
+    "\n"
+    "Never represent an inference as an explicitly documented fact.\n"
+    "\n"
+    "## 6. CORRECTIVE ACTIONS\n"
+    "\n"
+    "Only actions supported by the historical records may be included.\n"
+    "\n"
+    "A historical action may be converted into conditional technician language.\n"
+    "\n"
+    "Examples:\n"
+    "\n"
+    "Historical:\n"
+    "\"سنسور تنظیم شد\"\n"
+    "\n"
+    "Acceptable synthesis:\n"
+    "\"سنسور بررسی و در صورت نیاز تنظیم شود.\"\n"
+    "\n"
+    "Historical:\n"
+    "\"پاکت معیوب تعویض گردید\"\n"
+    "\n"
+    "Acceptable synthesis:\n"
+    "\"پاکت مشکوک بررسی و در صورت تأیید خرابی تعویض شود.\"\n"
+    "\n"
+    "Do not convert every historical action into a mandatory action.\n"
+    "\n"
+    "Do not invent actions.\n"
+    "\n"
+    "## 7. TROUBLESHOOTING SEQUENCING\n"
+    "\n"
+    "When several historical records document different checks and repairs, organize them into a practical diagnostic progression.\n"
+    "\n"
+    "Prefer this general logic only when supported by the records:\n"
+    "\n"
+    "1. preserve the failure condition;\n"
+    "2. identify where the failure stopped;\n"
+    "3. perform direct visual/mechanical checks;\n"
+    "4. check sensors and feedback;\n"
+    "5. check pneumatic/mechanical actuation where historically relevant;\n"
+    "6. inspect the affected subsystem;\n"
+    "7. check control/parameter/sequence causes where historically documented;\n"
+    "8. apply the supported corrective action;\n"
+    "9. verify the repair.\n"
+    "\n"
+    "This is a synthesis framework, not permission to introduce unsupported technical procedures.\n"
+    "\n"
+    "## 8. HISTORICAL FAILURE-FOCUS CATEGORIES\n"
+    "\n"
+    "Identify technical focus categories only from evidence in the records.\n"
+    "\n"
+    "Potential category names may include:\n"
+    "\n"
+    "* Tool Pocket / Magazine\n"
+    "* Gripper / Clamping\n"
+    "* Sensors / Feedback\n"
+    "* Door System\n"
+    "* Pneumatic System\n"
+    "* Control / Software / Parameter\n"
+    "\n"
+    "These are examples, not mandatory categories.\n"
+    "\n"
+    "If the records support another category, use it.\n"
+    "\n"
+    "If a record cannot be assigned confidently, classify it as Unknown / Unresolved.\n"
+    "\n"
+    "## 9. PRIMARY CATEGORY ASSIGNMENT\n"
+    "\n"
+    "For historical share calculations, each record must have exactly ONE primary failure-focus category.\n"
+    "\n"
+    "Use this hierarchy:\n"
+    "\n"
+    "1. explicit failure mechanism;\n"
+    "2. explicit failed component or subsystem in شرح تعمیر;\n"
+    "3. explicit symptom strongly identifying the affected subsystem;\n"
+    "4. Unknown / Unresolved when evidence is insufficient.\n"
+    "\n"
+    "Secondary observations may be preserved, but they must not cause the same record to be counted twice in historical shares.\n"
+    "\n"
+    "## 10. HISTORICAL COUNTS\n"
+    "\n"
+    "For every primary category, preserve:\n"
+    "\n"
+    "* record count;\n"
+    "* percentage of all supplied records;\n"
+    "* supporting record IDs.\n"
+    "\n"
+    "The denominator is the total number of supplied records.\n"
+    "\n"
+    "One record may contribute only once to the primary-category denominator.\n"
+    "\n"
+    "Percentages must be calculated from actual record counts.\n"
+    "\n"
+    "Do not fabricate percentages.\n"
+    "\n"
+    "## 11. PRIORITY\n"
+    "\n"
+    "Priority is historical, not speculative.\n"
+    "\n"
+    "A category may receive a higher priority because it has:\n"
+    "\n"
+    "* greater historical frequency;\n"
+    "* repeated occurrence;\n"
+    "* explicit failure evidence;\n"
+    "* repeated corrective actions;\n"
+    "* strong symptom association.\n"
+    "\n"
+    "Do not claim that a category is \"most likely\" merely because it is technically plausible.\n"
+    "\n"
+    "Use historical language such as:\n"
+    "\n"
+    "* بیشترین تکرار تاریخی\n"
+    "* در سوابق متعدد مشاهده شده\n"
+    "* در این سوابق با این نشانه همراه بوده\n"
+    "\n"
+    "## 12. VERIFICATION\n"
+    "\n"
+    "Extract only documented verification patterns.\n"
+    "\n"
+    "Examples include:\n"
+    "\n"
+    "* test and handover;\n"
+    "* repeated tool changes;\n"
+    "* testing multiple tools;\n"
+    "* testing after adjustment;\n"
+    "* checking that the alarm does not recur.\n"
+    "\n"
+    "Do not invent a required number of test cycles.\n"
+    "\n"
+    "## 13. UNKNOWN CASES\n"
+    "\n"
+    "Keep unresolved cases explicitly separate.\n"
+    "\n"
+    "Examples:\n"
+    "\n"
+    "* cause not identified;\n"
+    "* no fault found;\n"
+    "* failure not reproduced;\n"
+    "* insufficient evidence.\n"
+    "\n"
+    "Never force an unresolved record into a specific cause.\n"
+    "\n"
+    "## 14. OUTPUT\n"
+    "\n"
+    "Return JSON only.\n"
+    "\n"
+    "The JSON is an intermediate evidence package, not the final technician guide.\n"
+    "\n"
+    "Use this structure:\n"
+    "\n"
+    "{\n"
+    "\"equipment\": \"...\",\n"
+    "\"failure_mode\": \"...\",\n"
+    "\"record_count\": 0,\n"
+    "\"records\": [\n"
+    "{\n"
+    "\"record_id\": \"...\",\n"
+    "\"primary_focus\": \"...\",\n"
+    "\"symptoms\": [],\n"
+    "\"observations\": [],\n"
+    "\"mechanism\": \"...\",\n"
+    "\"cause\": \"...\",\n"
+    "\"diagnostic_checks\": [],\n"
+    "\"corrective_actions\": [],\n"
+    "\"verification\": [],\n"
+    "\"unresolved\": false\n"
+    "}\n"
+    "],\n"
+    "\"focus_categories\": [\n"
+    "{\n"
+    "\"name\": \"...\",\n"
+    "\"record_ids\": [],\n"
+    "\"record_count\": 0,\n"
+    "\"percentage\": 0,\n"
+    "\"subsystems\": [],\n"
+    "\"symptoms\": [],\n"
+    "\"components\": [],\n"
+    "\"historical_actions\": [],\n"
+    "\"verification_patterns\": []\n"
+    "}\n"
+    "],\n"
+    "\"recurring_patterns\": [],\n"
+    "\"unresolved_cases\": []\n"
+    "}\n"
+    "\n"
+    "All percentages must be based only on the records in this batch.\n"
+    "\n"
+    "Preserve record IDs exactly.\n"
+    "\n"
+    "Do not return prose outside the JSON.\n"
+    "\n"
+    "Do not return markdown.\n"
+    "\n"
+    "Do not cite knowledge outside the supplied records."
+)
+
+
+def serialize_stage_a_records(
+    records: List[Dict[str, Any]],
+) -> str:
+    """Deterministic serialization of one batch's six-field records."""
+    blocks = []
+    for item in records:
+        fields = item.get("fields") or {}
+        block = f"Record {item['source_record_id']}:\n" + \
+            serialize_stage_a_record(fields)
+        blocks.append(block)
+    return "\n\n".join(blocks)
+
+
+def build_stage_a_user_body(
+    equipment: str,
+    failure_mode: str,
+    records: List[Dict[str, Any]],
+) -> str:
+    """User head + serialized records (no schema footer)."""
+    return (
+        "Analyze the following historical maintenance records.\n"
+        "\n"
+        f"Equipment:\n{equipment}\n"
+        "\n"
+        f"Failure Mode:\n{failure_mode}\n"
+        "\n"
+        f"Batch record count:\n{len(records)}\n"
+        "\n"
+        "The following records are the complete source material for this batch.\n"
+        "\n"
+        "Each record contains exactly these six fields:\n"
+        "\n"
+        "* کد فرایندی\n"
+        "* شرح درخواست\n"
+        "* شرح تعمیر\n"
+        "* مکانیزم خرابی\n"
+        "* دلیل بروز عیب\n"
+        "* حالت خرابی\n"
+        "\n"
+        "Historical records:\n"
+        "\n"
+        f"{serialize_stage_a_records(records)}"
     )
 
 
-# --- deterministic record extraction (no embeddings) --------------------------
+_STAGE_A_USER_SUFFIX = (
+    "\n"
+    "\n"
+    "Analyze the records collectively according to the system instructions.\n"
+    "\n"
+    "Return the intermediate evidence package as JSON only."
+)
 
 
-def build_record_source_text(headers: List[str], values: List[Any]) -> str:
-    """Verbatim ``column: value`` lines for one workbook row.
-
-    Empty cells are skipped; nothing is rewritten or summarized — the
-    LLM input stays traceable to the original historical text.
-    """
-    lines: List[str] = []
-    for header, value in zip(headers, values):
-        if value is None:
-            continue
-        text = str(value).strip()
-        if not text:
-            continue
-        label = (header or "").strip() or "—"
-        lines.append(f"{label}: {text}")
-    return "\n".join(lines)
+def build_stage_a_prompt(
+    equipment: str,
+    failure_mode: str,
+    records: List[Dict[str, Any]],
+) -> Tuple[str, str]:
+    """System + user prompt for one Stage A batch (brief §5 verbatim)."""
+    user = build_stage_a_user_body(equipment, failure_mode, records) + \
+        _STAGE_A_USER_SUFFIX
+    return STAGE_A_SYSTEM_PROMPT, user
 
 
-def extract_record_inputs(
-    analysis_key: str, sheet: str, headers: List[str], rows: List[List[Any]]
+def _enrich_stage_a_rows(
+    analysis_key: str,
+    sheet: str,
+    headers: List[str],
+    rows: List[List[Any]],
 ) -> List[Dict[str, Any]]:
-    """One deterministic LLM input per non-empty workbook row.
+    """Shared enrichment: six-field rows grouped later by scope or batch.
 
-    ``source_record_id`` is ``<analysis_key>-LLMROW-<sheet>-<excel_row>``:
-    stable per report (analysis_key), unique across files, 1-based Excel
-    row numbers, never the filename. Rows with no text are skipped
-    (recorded by the caller as warnings, not failures).
+    Skips all-blank rows, tags equipment + normalized failure mode, and
+    sorts by Excel row for deterministic order. Internal record IDs ride
+    alongside for provenance; they are metadata, not a seventh field.
     """
-    inputs: List[Dict[str, Any]] = []
+    from api import llm_batching as batching
+
+    enriched: List[Dict[str, Any]] = []
     for offset, values in enumerate(rows):
         padded = list(values[: len(headers)])
         padded.extend([None] * (len(headers) - len(padded)))
-        source_text = build_record_source_text(headers, padded)
-        if not source_text.strip():
+        fields = extract_stage_a_values(headers, padded)
+        if not any(str(value).strip() for value in fields.values()):
             continue
         excel_row = offset + 2  # +1 header row, +1 for 1-based numbering
-        inputs.append(
-            {
-                "source_record_id": f"{analysis_key}-LLMROW-{sheet}-{excel_row}",
-                "source_text": source_text,
-            }
-        )
-    return inputs
+        equipment = batching.equipment_key(fields["کد فرایندی"])
+        failure_mode = batching.failure_mode_key(fields["حالت خرابی"])
+        enriched.append({
+            "source_record_id": f"{analysis_key}-LLMROW-{sheet}-{excel_row}",
+            "equipment": equipment,
+            "failure_mode": failure_mode,
+            "fields": fields,
+        })
+    enriched.sort(key=lambda item: _excel_row_of(str(item["source_record_id"])))
+    return enriched
+
+
+def scope_id_for(analysis_key: str, equipment: str, failure_mode: str) -> str:
+    """Deterministic scope ID for one (Equipment, Failure Mode) group."""
+    digest = hashlib.sha1(
+        f"{equipment}\x00{failure_mode}".encode("utf-8")).hexdigest()[:8]
+    return f"{analysis_key}-LLMSCOPE-{digest}"
+
+
+def plan_scope_insights(
+    analysis_key: str,
+    sheet: str,
+    headers: List[str],
+    rows: List[List[Any]],
+) -> List[Dict[str, Any]]:
+    """One insight scope per (equipment, normalized failure mode).
+
+    Unlike batch planning, a scope is NEVER split: every member record of
+    the semantic group belongs to exactly one scope plan, in Excel-row
+    order. Different equipment or failure modes never share a scope.
+    """
+    enriched = _enrich_stage_a_rows(analysis_key, sheet, headers, rows)
+    groups: Dict[Any, List[Dict[str, Any]]] = {}
+    for item in enriched:
+        groups.setdefault((item["equipment"], item["failure_mode"]), []).append(item)
+    plans: List[Dict[str, Any]] = []
+    for (equipment, failure_mode), members in groups.items():
+        member_ids = [str(item["source_record_id"]) for item in members]
+        plans.append({
+            "scope_id": scope_id_for(analysis_key, str(equipment),
+                                     str(failure_mode)),
+            "equipment": equipment,
+            "failure_mode": failure_mode,
+            "record_count": len(members),
+            "source_record_ids": member_ids,
+        })
+    return plans
+
+
+def plan_scope_records(
+    scope: Dict[str, Any],
+    headers: List[str],
+    rows: List[List[Any]],
+) -> List[Dict[str, Any]]:
+    """Re-resolve a scope's member six-field records (worker + tests)."""
+    return plan_stage_a_records(scope, headers, rows)
+
+
+#: Required marker: the practical troubleshooting sequence (§4.1).
+#: A response without it is not a troubleshooting insight.
+INSIGHT_SECTION_SEQUENCE = "# ترتیب پیشنهادی تعمیرکار"
+
+#: Remaining markers (§4.2–§4.3 + unresolved cases). Missing ones are
+#: recorded as warnings — the guide is still persisted as-is.
+INSIGHT_SECTION_CATEGORIES = "# دسته‌بندی کانون‌های اصلی خرابی"
+INSIGHT_SECTION_TABLE = "راهنمای کاربردی تعمیر:"
+INSIGHT_SECTION_UNKNOWN = "### موارد نامشخص / بدون علت قطعی"
+
+
+INSIGHT_SYSTEM_PROMPT = (
+    "You are a maintenance troubleshooting assistant.\n"
+    "\n"
+    "Your task is to synthesize the supplied historical maintenance records for ONE equipment unit and ONE failure mode into a practical Persian troubleshooting guide.\n"
+    "\n"
+    "## 1. SOURCE OF TRUTH\n"
+    "\n"
+    "Use only the information explicitly contained in the supplied records.\n"
+    "\n"
+    "Do not use general engineering knowledge, textbook knowledge, manufacturer knowledge, internet knowledge, knowledge about similar machines, other equipment, other failure modes, Text Mining results, or assumptions about how the machine should normally work.\n"
+    "\n"
+    "Do not invent components, sensors, mechanisms, alarms, parameters, measurements, thresholds, causes, repair actions, or verification procedures.\n"
+    "\n"
+    "## 2. INPUT FIELDS\n"
+    "\n"
+    "Every historical record contains exactly these six source fields:\n"
+    "\n"
+    "1. کد فرایندی\n"
+    "2. شرح درخواست\n"
+    "3. شرح تعمیر\n"
+    "4. مکانیزم خرابی\n"
+    "5. دلیل بروز عیب\n"
+    "6. حالت خرابی\n"
+    "\n"
+    "Treat the values exactly as historical evidence. Blank values mean the record does not establish that information.\n"
+    "\n"
+    "## 3. SYNTHESIS\n"
+    "\n"
+    "Analyze all records in this scope collectively. Repeated historical evidence — the same symptom, cause, check, or action appearing in several records — may be synthesized into a single troubleshooting step.\n"
+    "\n"
+    "Organize the documented checks and repairs into a practical diagnostic progression: preserve the failure condition, identify where the failure stopped, perform direct visual and mechanical checks first, then check sensors and feedback, pneumatic and mechanical actuation, gripper and clamping, the door system, pocket and magazine and tool mapping where historically documented, and control, parameter, or software causes only where historically documented. Verify the repair at the end.\n"
+    "\n"
+    "This is a synthesis framework, not permission to introduce unsupported technical procedures. The result must be operational and useful, not a record-by-record summary.\n"
+    "\n"
+    "## 4. HISTORICAL SHARES\n"
+    "\n"
+    "Derive every count and share from the supplied records only: count how many records support each focus area or cause, divide by the total number of supplied records, and report the result. Each record contributes only once to a share denominator.\n"
+    "\n"
+    "Do not fabricate percentages. Do not invent counts.\n"
+    "\n"
+    "## 5. UNCERTAINTY\n"
+    "\n"
+    "Keep unresolved cases explicitly separate. If the records do not establish a cause, say so. Never force an unresolved record into a specific cause. If a record says that no fault was found, do not convert that into a confirmed cause.\n"
+    "\n"
+    "A historical action may be converted into conditional technician language without introducing new technical facts.\n"
+    "\n"
+    "## 6. REQUIRED FINAL FORMAT\n"
+    "\n"
+    "Write the entire final answer in Persian. Return exactly the following structure.\n"
+    "\n"
+    "# ترتیب پیشنهادی تعمیرکار؛ نسخه عملیاتی\n"
+    "\n"
+    "(practical ordered troubleshooting sequence grounded in the supplied evidence)\n"
+    "\n"
+    "# دسته‌بندی کانون‌های اصلی خرابی {equipment}\n"
+    "\n"
+    "| کانون اصلی | زیرمجموعه‌ها | علائم شاخص | قطعاتی که باید در این کانون بررسی شوند | سهم تاریخی |\n"
+    "\n"
+    "(one row per evidence-supported focus area; shares computed from the supplied records)\n"
+    "\n"
+    "راهنمای کاربردی تعمیر:\n"
+    "\n"
+    "| اولویت بررسی | علت / کانون محتمل | سهم در سوابق | نشانه اصلی | اثر خرابی | اقدام پیشنهادی |\n"
+    "\n"
+    "(priority-oriented troubleshooting table grounded in the supplied evidence)\n"
+    "\n"
+    "### موارد نامشخص / بدون علت قطعی\n"
+    "\n"
+    "(unresolved historical cases; only what the records establish)\n"
+    "\n"
+    "Do not add any other top-level sections. Do not return JSON. Do not ask the user to provide additional input. Return only the final Persian guide."
+)
+
+
+def build_insight_prompt(
+    equipment: str,
+    failure_mode: str,
+    records: List[Dict[str, Any]],
+) -> Tuple[str, str]:
+    """System + user prompt for one direct scope insight (§3–§4)."""
+    user = (
+        "Generate the final operational troubleshooting guide for:\n"
+        "\n"
+        f"Equipment:\n{equipment}\n"
+        "\n"
+        f"Failure Mode:\n{failure_mode}\n"
+        "\n"
+        f"Total historical records:\n{len(records)}\n"
+        "\n"
+        "The following records are the complete historical evidence "
+        "for this Equipment + Failure Mode.\n"
+        "\n"
+        "Each record contains exactly these six fields:\n"
+        "\n"
+        "* کد فرایندی\n"
+        "* شرح درخواست\n"
+        "* شرح تعمیر\n"
+        "* مکانیزم خرابی\n"
+        "* دلیل بروز عیب\n"
+        "* حالت خرابی\n"
+        "\n"
+        "Historical records:\n"
+        "\n"
+        f"{serialize_stage_a_records(records)}"
+        "\n"
+        "\n"
+        "Synthesize all supplied records according to the system instructions.\n"
+        "\n"
+        "Return only the final Persian operational troubleshooting guide."
+    )
+    return INSIGHT_SYSTEM_PROMPT, user
+
+
+def validate_insight_markdown(
+    markdown: Any,
+) -> Tuple[bool, List[str], List[str]]:
+    """Validate a direct insight response without rewriting it.
+
+    Returns ``(ok, problems, warnings)``. Empty responses and responses
+    missing the troubleshooting sequence are invalid and must never be
+    persisted; other missing sections are warnings only. The content
+    itself is never modified — it is stored as-is or not at all.
+    """
+    if not isinstance(markdown, str) or not markdown.strip():
+        return False, ["empty_insight"], []
+    if INSIGHT_SECTION_SEQUENCE not in markdown:
+        return False, ["missing_section: troubleshooting_sequence"], []
+    warnings: List[str] = []
+    for marker in (INSIGHT_SECTION_CATEGORIES, INSIGHT_SECTION_TABLE,
+                   INSIGHT_SECTION_UNKNOWN):
+        if marker not in markdown:
+            warnings.append(f"missing_section: {marker[:24]}")
+    return True, [], warnings
+
+
+def plan_stage_a_batches(
+    analysis_key: str,
+    sheet: str,
+    headers: List[str],
+    rows: List[List[Any]],
+    max_records: Optional[int] = None,
+    max_tokens: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """Deterministic Stage A batch plans for one report's workbook content."""
+    from api import llm_batching as batching
+
+    enriched = _enrich_stage_a_rows(analysis_key, sheet, headers, rows)
+
+    groups: Dict[Any, List[Dict[str, Any]]] = {}
+    for item in enriched:
+        groups.setdefault((item["equipment"], item["failure_mode"]), []).append(item)
+    plans: List[Dict[str, Any]] = []
+    for (equipment, failure_mode), members in groups.items():
+        def _group_prefix(
+            accumulated: List[Dict[str, Any]],
+            _eq: str = str(equipment),
+            _fm: str = str(failure_mode),
+        ) -> str:
+            return build_stage_a_user_body(_eq, _fm, accumulated)
+
+        for plan in batching.plan_batches(
+            members, STAGE_A_SYSTEM_PROMPT, _group_prefix,
+            _STAGE_A_USER_SUFFIX, max_records=max_records,
+            max_tokens=max_tokens,
+        ):
+            plans.append(plan)
+    return plans
+
+
+def plan_stage_a_records(
+    plan: Dict[str, Any],
+    headers: List[str],
+    rows: List[List[Any]],
+) -> List[Dict[str, Any]]:
+    """Re-resolve a plan's member six-field records (worker + tests)."""
+    ordered: List[Dict[str, Any]] = []
+    for rid in plan.get("source_record_ids") or []:
+        row_no = _excel_row_of(str(rid))
+        fields: Dict[str, str] = {field: "" for field in STAGE_A_FIELDS}
+        if 2 <= row_no < len(rows) + 2:
+            values = list(rows[row_no - 2][: len(headers)])
+            values.extend([None] * (len(headers) - len(values)))
+            fields = extract_stage_a_values(headers, values)
+        if any(str(value).strip() for value in fields.values()):
+            ordered.append({"source_record_id": str(rid), "fields": fields})
+    return ordered
 
 
 # --- build records ------------------------------------------------------------
@@ -480,8 +1121,17 @@ def _record_row(row: Dict[str, Any]) -> Dict[str, Any]:
         "corrective_actions": row.get("corrective_actions") or [],
         "verification_steps": row.get("verification_steps") or [],
         "post_repair_events": row.get("post_repair_events") or [],
+        "stage_a_evidence": row.get("stage_a_evidence"),
         "record_error": row.get("record_error"),
         "created": _str(row.get("created")),
+        # Batch provenance (M19; absent on legacy per-record rows).
+        "batch_index": row.get("batch_index"),
+        "equipment": row.get("equipment"),
+        "failure_mode": row.get("failure_mode"),
+        "batch_record_ids": row.get("batch_record_ids") or [],
+        "est_input_tokens": row.get("est_input_tokens"),
+        "batch_config": row.get("batch_config") or {},
+        "oversized": bool(row.get("oversized") or False),
     }
 
 
@@ -768,41 +1418,46 @@ async def find_latest_finished_build_for_reports(
 # --- record persistence + queries ----------------------------------------------
 
 
-def _item_dicts(items: List[LLMItem]) -> List[Dict[str, Any]]:
-    return [
-        {"text": item.text, "basis": item.basis, "source_quote": item.source_quote}
-        for item in items
-    ]
-
-
-async def save_record(
+async def save_stage_a_batch_record(
     build_id: str,
     source_report_id: str,
-    source_record_id: str,
-    source_text: str,
-    extraction: Optional[LLMExtraction],
+    plan: Dict[str, Any],
+    member_texts: Dict[str, str],
+    package: Optional[StageAEvidencePackage],
     record_error: Optional[str],
 ) -> Dict[str, Any]:
-    """Persist one record (validated extraction or traceable failure)."""
+    """Persist one Stage A batch row (evidence package or traceable failure).
+
+    ``plan`` is a ``plan_stage_a_batches`` entry; ``member_texts`` maps
+    member ``source_record_id`` → serialized six-field text. Percentages
+    and category shares ride through exactly as the model returned them —
+    never recomputed, never rewritten.
+    """
+    ordered_ids = [str(rid) for rid in plan.get("source_record_ids") or []]
+    source_text = "\n\n---\n\n".join(
+        member_texts.get(rid, "") for rid in ordered_ids
+    )
     payload: Dict[str, Any] = {
         "build_id": ensure_record_id(build_id),
         "source_report_id": ensure_record_id(source_report_id),
-        "source_record_id": source_record_id,
+        "source_record_id": str(plan.get("batch_id")),
         "source_text": source_text,
-        "symptom": extraction.symptom if extraction else None,
-        "findings": _item_dicts(extraction.findings) if extraction else [],
-        "candidate_causes": _item_dicts(extraction.candidate_causes) if extraction else [],
-        "diagnostic_steps": _item_dicts(extraction.diagnostic_steps) if extraction else [],
-        "corrective_actions": (
-            _item_dicts(extraction.corrective_actions) if extraction else []
-        ),
-        "verification_steps": (
-            _item_dicts(extraction.verification_steps) if extraction else []
-        ),
-        "post_repair_events": (
-            _item_dicts(extraction.post_repair_events) if extraction else []
-        ),
+        "symptom": None,
+        "findings": [],
+        "candidate_causes": [],
+        "diagnostic_steps": [],
+        "corrective_actions": [],
+        "verification_steps": [],
+        "post_repair_events": [],
+        "stage_a_evidence": package.model_dump() if package is not None else None,
         "record_error": record_error,
+        "batch_index": plan.get("index"),
+        "equipment": plan.get("equipment"),
+        "failure_mode": plan.get("failure_mode"),
+        "batch_record_ids": ordered_ids,
+        "est_input_tokens": plan.get("est_input_tokens"),
+        "batch_config": plan.get("config") or {},
+        "oversized": bool(plan.get("oversized") or False),
         "created": "time::now()",
     }
     fields = ", ".join(f"{key}: $val_{key}" for key in payload if key != "created")
@@ -812,14 +1467,694 @@ async def save_record(
         params,
     )
     if not rows:
-        raise RuntimeError("Failed to persist LLM knowledge record")
+        raise RuntimeError("Failed to persist Stage A batch record")
     return _record_row(rows[0])
+
+
+# --- Stage B full synthesis (two-stage guide generation) -----------------------
+#
+# After ALL Stage A batches for one Equipment + Failure Mode finish, Stage B
+# synthesizes them into the final Persian operational guide. Real LLM call —
+# never templated. The application owns scope assembly, reference
+# validation and persistence; the LLM owns all substantive content.
+
+
+TABLE_STAGE_B_GUIDE = "llm_stage_b_guide"
+
+STAGE_B_SYSTEM_PROMPT = (
+    "You are a senior maintenance troubleshooting knowledge synthesizer.\n"
+    "\n"
+    "Your task is to transform evidence extracted from historical maintenance records into a practical operational troubleshooting guide for ONE equipment unit and ONE failure mode.\n"
+    "\n"
+    "The evidence ultimately originates from raw maintenance reports.\n"
+    "\n"
+    "You must NOT use external knowledge.\n"
+    "\n"
+    "## 1. ABSOLUTE SOURCE RULE\n"
+    "\n"
+    "Use only the supplied historical evidence packages.\n"
+    "\n"
+    "Do not use:\n"
+    "\n"
+    "* general engineering knowledge;\n"
+    "* textbook knowledge;\n"
+    "* manufacturer procedures;\n"
+    "* internet knowledge;\n"
+    "* assumptions about the equipment;\n"
+    "* Text Mining output;\n"
+    "* pre-existing troubleshooting guides;\n"
+    "* canonical causes;\n"
+    "* knowledge from another equipment;\n"
+    "* knowledge from another failure mode.\n"
+    "\n"
+    "If the evidence does not support a statement, do not create that statement.\n"
+    "\n"
+    "## 2. OBJECTIVE\n"
+    "\n"
+    "Produce a result similar in structure, depth, and practical usefulness to an experienced maintenance engineer's troubleshooting guide.\n"
+    "\n"
+    "The result must transform repeated historical maintenance evidence into:\n"
+    "\n"
+    "1. an operational troubleshooting sequence;\n"
+    "2. historical failure-focus categories;\n"
+    "3. historical frequency and percentages;\n"
+    "4. a prioritized troubleshooting table;\n"
+    "5. unresolved/unknown cases.\n"
+    "\n"
+    "The guide is historical evidence synthesized into an operational form.\n"
+    "\n"
+    "It is NOT a generic maintenance manual.\n"
+    "\n"
+    "## 3. EQUIPMENT AND FAILURE MODE\n"
+    "\n"
+    "All supplied evidence belongs to the same equipment and the same failure mode.\n"
+    "\n"
+    "Treat all supplied evidence packages as one historical knowledge set.\n"
+    "\n"
+    "Do not keep batch boundaries in the final answer.\n"
+    "\n"
+    "Merge evidence across all batches.\n"
+    "\n"
+    "## 4. RECORD COUNT\n"
+    "\n"
+    "Use the complete set of unique source records represented across all evidence packages.\n"
+    "\n"
+    "Each source record must be counted exactly once for primary failure-focus statistics.\n"
+    "\n"
+    "Do not count the same record twice because it contains multiple components or actions.\n"
+    "\n"
+    "## 5. PRIMARY FAILURE-FOCUS CATEGORIES\n"
+    "\n"
+    "Construct a small number of meaningful technical categories from the historical evidence.\n"
+    "\n"
+    "Possible examples include:\n"
+    "\n"
+    "* Tool Pocket / Magazine\n"
+    "* Gripper / Clamping\n"
+    "* Sensors / Feedback\n"
+    "* Door System\n"
+    "* Pneumatic System\n"
+    "* Control / Software / Parameter\n"
+    "* Unknown / Unresolved\n"
+    "\n"
+    "Do not force the evidence into these exact categories.\n"
+    "\n"
+    "Merge semantically equivalent categories.\n"
+    "\n"
+    "Keep technically distinct mechanisms separate.\n"
+    "\n"
+    "## 6. CATEGORY SHARE\n"
+    "\n"
+    "For each category provide:\n"
+    "\n"
+    "* category name;\n"
+    "* subcomponents;\n"
+    "* characteristic symptoms;\n"
+    "* components/items to inspect;\n"
+    "* historical record count;\n"
+    "* historical percentage.\n"
+    "\n"
+    "The percentage must be:\n"
+    "\n"
+    "category primary-record count / total unique source-record count × 100\n"
+    "\n"
+    "Round percentages to one decimal place.\n"
+    "\n"
+    "The category percentages must sum to approximately 100%, subject only to rounding.\n"
+    "\n"
+    "## 7. PRIORITY TABLE\n"
+    "\n"
+    "Create a historical-priority troubleshooting table.\n"
+    "\n"
+    "Columns:\n"
+    "\n"
+    "| اولویت بررسی | علت / کانون محتمل | سهم در سوابق | نشانه اصلی | اثر خرابی | اقدام پیشنهادی |\n"
+    "\n"
+    "The order must be based on historical evidence.\n"
+    "\n"
+    "Do not call an item \"most likely\" unless that conclusion is explicitly supported by the historical evidence.\n"
+    "\n"
+    "Prefer historical wording such as:\n"
+    "\n"
+    "* بیشترین تکرار تاریخی\n"
+    "* در سوابق متعدد مشاهده شده\n"
+    "* در این سوابق همراه با این نشانه ثبت شده\n"
+    "\n"
+    "## 8. OPERATIONAL TROUBLESHOOTING SEQUENCE\n"
+    "\n"
+    "Create a practical sequence for a maintenance technician.\n"
+    "\n"
+    "The sequence should progress from preserving the failure condition toward diagnosis and verification.\n"
+    "\n"
+    "A typical structure may contain approximately 7–12 stages, but the number is determined by the evidence.\n"
+    "\n"
+    "For each stage explain:\n"
+    "\n"
+    "* what to check;\n"
+    "* why this check is relevant to the historical records;\n"
+    "* what observation leads to the next branch;\n"
+    "* what documented action is appropriate if a fault is found.\n"
+    "\n"
+    "Use concise operational language.\n"
+    "\n"
+    "Examples of acceptable formulations:\n"
+    "\n"
+    "* بررسی شود.\n"
+    "* کنترل شود.\n"
+    "* در صورت مشاهده خرابی، تعویض شود.\n"
+    "* در صورت نیاز تنظیم شود.\n"
+    "* در صورت مشاهده نشتی، مسیر مربوطه بررسی و رفع شود.\n"
+    "\n"
+    "Do not invent measurements, thresholds, parameter values, or component specifications.\n"
+    "\n"
+    "## 9. PRESERVE THE FAILURE CONDITION\n"
+    "\n"
+    "If the historical records contain evidence that resetting, changing machine state, or losing the alarm condition can hide the original fault, this should be reflected in the initial stage.\n"
+    "\n"
+    "Do not create this recommendation merely from general knowledge.\n"
+    "\n"
+    "It must be supported by the supplied evidence.\n"
+    "\n"
+    "## 10. SYMPTOM-TO-PATH RELATIONSHIPS\n"
+    "\n"
+    "Where historical records support them, connect symptoms to troubleshooting paths.\n"
+    "\n"
+    "Examples:\n"
+    "\n"
+    "* problem associated with a particular Pocket;\n"
+    "* gripper not holding/releasing;\n"
+    "* spindle clamping problem;\n"
+    "* door confirmation problem;\n"
+    "* sensor/input problem;\n"
+    "* pneumatic movement problem;\n"
+    "* sequence or parameter-related problem.\n"
+    "\n"
+    "Do not introduce a symptom that does not appear in the evidence.\n"
+    "\n"
+    "## 11. DIAGNOSTIC ORDER\n"
+    "\n"
+    "The final order should be an evidence-based synthesis.\n"
+    "\n"
+    "It may organize recurring historical checks into a practical order, but it must not claim to be the manufacturer's official procedure.\n"
+    "\n"
+    "Do not add generic steps solely because they are normally performed in industry.\n"
+    "\n"
+    "## 12. CORRECTIVE ACTIONS\n"
+    "\n"
+    "Every corrective action must be traceable to one or more historical records.\n"
+    "\n"
+    "Convert historical actions into conditional operational instructions.\n"
+    "\n"
+    "Do not turn a one-time historical action into an unconditional universal instruction.\n"
+    "\n"
+    "## 13. VERIFICATION\n"
+    "\n"
+    "The final stage must reflect documented historical verification.\n"
+    "\n"
+    "Examples:\n"
+    "\n"
+    "* repeated tool changes;\n"
+    "* tests using multiple tools;\n"
+    "* tests involving different pockets;\n"
+    "* alarm recurrence checks;\n"
+    "* machine test and handover.\n"
+    "\n"
+    "Do not invent test counts.\n"
+    "\n"
+    "## 14. UNRESOLVED CASES\n"
+    "\n"
+    "Create an explicit unresolved section.\n"
+    "\n"
+    "Cases where the cause was:\n"
+    "\n"
+    "* unknown;\n"
+    "* not identified;\n"
+    "* not reproduced;\n"
+    "* not observed;\n"
+    "* insufficiently documented\n"
+    "\n"
+    "must remain unresolved.\n"
+    "\n"
+    "Do not assign a technical cause merely to make the guide complete.\n"
+    "\n"
+    "## 15. LANGUAGE\n"
+    "\n"
+    "Write the entire final answer in Persian.\n"
+    "\n"
+    "Preserve technical English terminology from the evidence where it improves precision.\n"
+    "\n"
+    "Do not translate technical component names into invented terminology.\n"
+    "\n"
+    "## 16. REQUIRED FINAL FORMAT\n"
+    "\n"
+    "Return exactly the following structure.\n"
+    "\n"
+    "# ترتیب پیشنهادی تعمیرکار؛ نسخه عملیاتی\n"
+    "\n"
+    "### مرحله 1 — ...\n"
+    "\n"
+    "...\n"
+    "\n"
+    "### مرحله 2 — ...\n"
+    "\n"
+    "...\n"
+    "\n"
+    "Continue until the evidence-supported troubleshooting sequence is complete.\n"
+    "\n"
+    "Then:\n"
+    "\n"
+    "# دسته‌بندی کانون‌های اصلی خرابی {equipment}\n"
+    "\n"
+    "| کانون اصلی | زیرمجموعه‌ها | علائم شاخص | قطعاتی که باید در این کانون بررسی شوند | سهم تاریخی |\n"
+    "| ---------- | ------------ | ---------- | -------------------------------------- | ---------- |\n"
+    "\n"
+    "Then:\n"
+    "\n"
+    "راهنمای کاربردی تعمیر:\n"
+    "\n"
+    "| اولویت بررسی | علت / کانون محتمل | سهم در سوابق | نشانه اصلی | اثر خرابی | اقدام پیشنهادی |\n"
+    "| ------------ | ----------------- | ------------ | ---------- | --------- | -------------- |\n"
+    "\n"
+    "Then:\n"
+    "\n"
+    "### موارد نامشخص / بدون علت قطعی\n"
+    "\n"
+    "List unresolved historical cases and explain only what the records establish.\n"
+    "\n"
+    "## 17. FINAL QUALITY CONTROL\n"
+    "\n"
+    "Before returning the final answer, verify internally:\n"
+    "\n"
+    "* every technical component appears in the supplied evidence;\n"
+    "* every troubleshooting branch has historical support;\n"
+    "* every corrective action is historically supported;\n"
+    "* unknown causes remain unknown;\n"
+    "* no source record is double-counted;\n"
+    "* the denominator is the total number of unique source records;\n"
+    "* percentages are mathematically consistent;\n"
+    "* category labels represent evidence-supported groupings;\n"
+    "* the guide does not introduce external engineering knowledge;\n"
+    "* the final sequence is practical but evidence-grounded;\n"
+    "* the result contains no discussion of these instructions.\n"
+    "\n"
+    "Return only the final Persian guide."
+)
+
+
+#: Required Stage B section markers (§16). A synthesis missing any of
+#: these is invalid — the format is part of the contract.
+STAGE_B_REQUIRED_SECTIONS = (
+    "# ترتیب پیشنهادی تعمیرکار؛ نسخه عملیاتی",
+    "# دسته‌بندی کانون‌های اصلی خرابی",
+    "راهنمای کاربردی تعمیر:",
+    "### موارد نامشخص / بدون علت قطعی",
+)
+
+
+class StageBSynthesis(BaseModel):
+    """Persisted Stage B synthesis for one (build, equipment, FM) scope."""
+
+    equipment: str = ""
+    failure_mode: str = ""
+    guide_markdown: str = ""
+    record_count: int = 0
+    batch_ids: List[str] = Field(default_factory=list)
+    source_record_ids: List[str] = Field(default_factory=list)
+    math_warnings: List[str] = Field(default_factory=list)
+
+
+def build_stage_b_prompt(
+    equipment: str,
+    failure_mode: str,
+    total_unique: int,
+    evidence_packages: List[Dict[str, Any]],
+) -> Tuple[str, str]:
+    """System + user prompt for one Stage B synthesis (brief §7 verbatim)."""
+    rendered = "\n\n".join(
+        json.dumps(package, ensure_ascii=False)
+        for package in evidence_packages
+    )
+    user = (
+        "Generate the final operational troubleshooting guide for:\n"
+        "\n"
+        f"Equipment:\n{equipment}\n"
+        "\n"
+        f"Failure Mode:\n{failure_mode}\n"
+        "\n"
+        f"Total unique historical records:\n{total_unique}\n"
+        "\n"
+        "The following evidence packages collectively represent ALL historical records for this Equipment + Failure Mode.\n"
+        "\n"
+        "They may have been produced by multiple Stage A batches because of token or record-count limits.\n"
+        "\n"
+        "Treat them as ONE complete historical knowledge set.\n"
+        "\n"
+        "Do not preserve batch boundaries in the final answer.\n"
+        "\n"
+        "--- HISTORICAL EVIDENCE PACKAGES ---\n"
+        "\n"
+        f"{rendered}\n"
+        "\n"
+        "--- END HISTORICAL EVIDENCE PACKAGES ---\n"
+        "\n"
+        "Synthesize all supplied evidence packages according to the system instructions.\n"
+        "\n"
+        "Return only the final Persian operational troubleshooting guide."
+    )
+    return STAGE_B_SYSTEM_PROMPT, user
+
+
+_STAGE_B_ID_PATTERN = re.compile(r"[A-Za-z0-9_]+-LLMROW-\S+")
+
+
+def _validate_stage_b_guide(
+    markdown: str, scope_record_ids: List[str]
+) -> List[str]:
+    """Validate a Stage B synthesis without rewriting it.
+
+    Returns a list of blocking problems (empty when valid): missing
+    required sections, references to source IDs outside the scope, or
+    mathematically inconsistent percentages. The guide text itself is
+    never modified — invalid syntheses are rejected, not repaired.
+    """
+    problems: List[str] = []
+    if not isinstance(markdown, str) or not markdown.strip():
+        return ["empty_synthesis"]
+    for marker in STAGE_B_REQUIRED_SECTIONS:
+        if marker not in markdown:
+            problems.append(f"missing_section: {marker[:24]}")
+    scope = set(scope_record_ids)
+    for match in _STAGE_B_ID_PATTERN.finditer(markdown):
+        candidate = match.group(0).rstrip(".,;:!?\"')]}")
+        if candidate not in scope:
+            problems.append(f"unknown_record_reference: {candidate[:48]}")
+            break
+    problems.extend(_check_share_table_math(markdown))
+    return problems
+
+
+def _check_share_table_math(markdown: str) -> List[str]:
+    """Check share-column tables sum to ~100 (never rewrites anything).
+
+    Only markdown tables whose header names a share column (سهم) are
+    assessed; bare numbers elsewhere (counts, pocket numbers, prose
+    percentages) are not verifiable shares and are ignored.
+    """
+    problems: List[str] = []
+    table_rows: List[List[str]] = []
+    for line in markdown.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("|") and stripped.endswith("|"):
+            cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+            if cells and all(set(cell) <= set("-: ") for cell in cells):
+                continue  # separator row
+            table_rows.append(cells)
+        else:
+            _flush_tables(table_rows, problems)
+            table_rows = []
+    _flush_tables(table_rows, problems)
+    return problems
+
+
+def _flush_tables(
+    table_rows: List[List[str]], problems: List[str]
+) -> None:
+    if len(table_rows) < 2:
+        table_rows.clear()
+        return
+    header = table_rows[0]
+    share_idx = next(
+        (pos for pos, cell in enumerate(header) if "سهم" in cell), None)
+    rows = table_rows[1:]
+    table_rows.clear()
+    if share_idx is None:
+        return
+    values: List[float] = []
+    for row in rows:
+        if share_idx >= len(row):
+            continue
+        cell = row[share_idx].rstrip("%٪").strip()
+        try:
+            values.append(float(cell))
+        except ValueError:
+            continue
+    if values and not 97.0 <= sum(values) <= 103.0:
+        problems.append(
+            f"math_inconsistency: share column sums to {sum(values):.1f}"
+        )
+
+
+async def _existing_stage_b_scopes(build_id: str) -> set:
+    """(equipment, failure_mode) scopes already synthesized for a build."""
+    rows = await repo_query(
+        f"SELECT equipment, failure_mode FROM {TABLE_STAGE_B_GUIDE} "
+        "WHERE build_id = $bid",
+        {"bid": ensure_record_id(build_id)},
+    )
+    return {(str(row.get("equipment") or ""), str(row.get("failure_mode") or ""))
+            for row in rows or []}
+
+
+async def list_stage_b_guides(build_id: str) -> List[Dict[str, Any]]:
+    """Persisted Stage B syntheses for a build (Guide primary output)."""
+    rows = await repo_query(
+        f"SELECT * FROM {TABLE_STAGE_B_GUIDE} WHERE build_id = $bid",
+        {"bid": ensure_record_id(build_id)},
+    )
+    guides: List[Dict[str, Any]] = []
+    for row in rows or []:
+        guides.append({
+            "synthesis_id": str(row.get("id")) if row.get("id") else None,
+            "build_id": str(row.get("build_id")) if row.get("build_id") else None,
+            "equipment": str(row.get("equipment") or ""),
+            "failure_mode": str(row.get("failure_mode") or ""),
+            "guide_markdown": str(row.get("guide_markdown") or ""),
+            "record_count": row.get("record_count"),
+            "batch_ids": [str(item) for item in row.get("batch_ids") or []],
+            "source_record_ids": [str(item) for item in row.get("source_record_ids") or []],
+            "model": row.get("model"),
+            "prompt_version": row.get("prompt_version"),
+            "math_warnings": [],
+        })
+    return guides
+
+
+async def save_stage_b_guide(
+    build_id: str,
+    equipment: str,
+    failure_mode: str,
+    guide_markdown: str,
+    record_count: int,
+    batch_ids: List[str],
+    source_record_ids: List[str],
+    model: Optional[str],
+    stage_b_budget: int,
+) -> Dict[str, Any]:
+    """Persist one Stage B synthesis (never rewrites LLM content)."""
+    synthesis = StageBSynthesis(
+        equipment=equipment, failure_mode=failure_mode,
+        guide_markdown=guide_markdown, record_count=record_count,
+        batch_ids=list(batch_ids),
+        source_record_ids=list(source_record_ids),
+    )
+    payload: Dict[str, Any] = {
+        "build_id": ensure_record_id(build_id),
+        "equipment": synthesis.equipment,
+        "failure_mode": synthesis.failure_mode,
+        "guide_markdown": synthesis.guide_markdown,
+        "record_count": synthesis.record_count,
+        "batch_ids": synthesis.batch_ids,
+        "source_record_ids": synthesis.source_record_ids,
+        "model": model,
+        "prompt_version": PROMPT_VERSION,
+        "stage_b_budget": stage_b_budget,
+        "created": "time::now()",
+    }
+    fields = ", ".join(f"{key}: $val_{key}" for key in payload if key != "created")
+    params = {f"val_{key}": value for key, value in payload.items() if key != "created"}
+    try:
+        rows = await repo_query(
+            f"CREATE {TABLE_STAGE_B_GUIDE} CONTENT {{{fields}, "
+            f"created: time::now()}} RETURN AFTER",
+            params,
+        )
+    except Exception as e:
+        message = str(e)
+        if "unique" in message.lower() or "duplicate" in message.lower():
+            logger.debug(f"Stage B guide for {equipment}/{failure_mode} already stored")
+            return {"duplicate": True}
+        raise
+    if not rows:
+        raise RuntimeError("Failed to persist Stage B guide")
+    return rows[0]
+
+
+async def run_stage_b_for_build(
+    build_id: str, model_id: Optional[str]
+) -> List[str]:
+    """Synthesize final guides for every fully-successful scope (once each).
+
+    Groups persisted Stage A batch rows by (equipment, failure_mode);
+    groups with any failed batch are skipped with a warning (a retry that
+    completes them re-runs this step); groups already synthesized are
+    skipped (idempotent resume). Returns warnings for the build record.
+    """
+    from api.llm_generation import LLMKnowledgeGenerator
+
+    warnings: List[str] = []
+    budgets = resolve_generation_budgets()
+    rows = await repo_query(
+        f"SELECT * FROM {TABLE_RECORD} WHERE build_id = $bid",
+        {"bid": ensure_record_id(build_id)},
+    )
+    groups: Dict[Any, List[Dict[str, Any]]] = {}
+    order: List[Any] = []
+    for row in rows or []:
+        if not row.get("batch_record_ids"):
+            continue
+        key = (str(row.get("equipment") or ""),
+               str(row.get("failure_mode") or ""))
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(row)
+    if not groups:
+        return warnings
+    done = await _existing_stage_b_scopes(build_id)
+    generator = LLMKnowledgeGenerator(model_id)
+    for equipment, failure_mode in order:
+        key = (equipment, failure_mode)
+        if key in done:
+            continue
+        members = sorted(groups[key],
+                         key=lambda r: (r.get("batch_index") or 0))
+        failed = [m for m in members
+                  if m.get("record_error") or not m.get("stage_a_evidence")]
+        if failed:
+            warnings.append(
+                f"stage_b_skipped_failed_batches:{equipment}:{failure_mode}")
+            continue
+        unique_ids: List[str] = []
+        envelopes: List[Dict[str, Any]] = []
+        for member in members:
+            for rid in member.get("batch_record_ids") or []:
+                if rid not in unique_ids:
+                    unique_ids.append(rid)
+            envelopes.append({
+                "batch_id": str(member.get("source_record_id")),
+                "source_record_ids": list(member.get("batch_record_ids") or []),
+                "evidence": member.get("stage_a_evidence") or {},
+            })
+        system, user = build_stage_b_prompt(
+            equipment, failure_mode, len(unique_ids), envelopes)
+        try:
+            markdown = await generator.generate_from_messages(
+                system, user, max_tokens=budgets["stage_b"], structured=None,
+            )
+        except (ValueError, ConfigurationError):
+            raise
+        except Exception as e:
+            warnings.append(
+                f"stage_b_provider_error:{equipment}:{failure_mode}: {e}"[:200])
+            continue
+        problems = _validate_stage_b_guide(markdown, unique_ids)
+        if problems:
+            warnings.append(
+                f"stage_b_invalid:{equipment}:{failure_mode}: "
+                f"{'; '.join(problems)}"[:200])
+            continue
+        await save_stage_b_guide(
+            build_id, equipment, failure_mode, markdown, len(unique_ids),
+            [str(m.get("source_record_id")) for m in members], unique_ids,
+            model_id, budgets["stage_b"],
+        )
+    return warnings
+
+
+async def run_scope_insights_for_build(
+    scopes: List[Dict[str, Any]],
+    scope_records: Dict[str, List[Dict[str, Any]]],
+    build_id: str,
+    model_id: Optional[str],
+    generate_fn: Any,
+) -> Tuple[int, int, List[str]]:
+    """Generate one direct insight per scope; persist each as-is.
+
+    ``scopes`` are :func:`plan_scope_insights` plans; ``scope_records``
+    maps each scope ID to its resolved six-field member records. Scopes
+    already guided (unique index on build + equipment + failure mode)
+    are skipped for idempotent resume. Returns
+    ``(ok_count, failed_count, warnings)`` — every scope ends counted,
+    so a build processed here can always reach a terminal state.
+    """
+    warnings: List[str] = []
+    budgets = resolve_generation_budgets()
+    done = await _existing_stage_b_scopes(build_id)
+    ok_count = 0
+    failed_count = 0
+    for scope in scopes:
+        equipment = str(scope.get("equipment") or "")
+        failure_mode = str(scope.get("failure_mode") or "")
+        scope_id = str(scope.get("scope_id") or "")
+        key = (equipment, failure_mode)
+        if key in done:
+            continue
+        members = scope_records.get(scope_id) or []
+        if not members:
+            warnings.append(f"empty_scope:{scope_id}")
+            continue
+        system, user = build_insight_prompt(
+            equipment, failure_mode,
+            [{"source_record_id": m["source_record_id"], "fields": m["fields"]}
+             for m in members],
+        )
+        try:
+            raw = await generate_fn(
+                system, user, scope_id, model_id, budgets["stage_b"])
+        except (ValueError, ConfigurationError):
+            raise
+        except Exception as e:
+            warnings.append(
+                f"scope_provider_error:{equipment}:{failure_mode}: {e}"[:200])
+            failed_count += 1
+            continue
+        valid, problems, guide_warnings = validate_insight_markdown(raw)
+        for item in guide_warnings:
+            warnings.append(f"scope_guide_warning:{equipment}:{failure_mode}: "
+                            f"{item}"[:200])
+        if not valid:
+            warnings.append(
+                f"scope_invalid:{equipment}:{failure_mode}: "
+                f"{'; '.join(problems)}"[:200])
+            failed_count += 1
+            continue
+        try:
+            await save_stage_b_guide(
+                build_id, equipment, failure_mode, raw, len(members),
+                [scope_id],
+                [str(m["source_record_id"]) for m in members],
+                model_id, budgets["stage_b"],
+            )
+        except Exception as e:
+            message = str(e)
+            if "unique" in message.lower() or "duplicate" in message.lower():
+                logger.debug(f"Insight scope {scope_id} already stored")
+            else:
+                warnings.append(
+                    f"scope_persist_error:{equipment}:{failure_mode}: "
+                    f"{e}"[:200])
+                failed_count += 1
+                continue
+        ok_count += 1
+        done.add(key)
+    return ok_count, failed_count, warnings
 
 
 async def existing_source_record_ids(build_id: str) -> set:
     """Source records already persisted for a build (worker resume seam)."""
     rows = await repo_query(
-        f"SELECT VALUE source_record_id FROM {TABLE_RECORD} WHERE build_id = $bid",
+        f"SELECT VALUE source_record_id FROM {TABLE_RECORD} WHERE build_id = $bid "
+        "AND record_error = NONE AND stage_a_evidence != NONE",
         {"bid": ensure_record_id(build_id)},
     )
     return {str(item) for item in rows or []}
@@ -975,10 +2310,13 @@ async def assemble_llm_guide(
     """Records of one build + one source report as a guide (§15–§18).
 
     Never mixes sources: only records whose ``source_report_id``
-    matches exactly are returned. Empty states are explicit
-    (``no_records_for_source``), and a deleted backing report keeps its
-    stable identity with ``source_deleted`` — never remapped to another
-    same-named file. Provenance (§17) rides on every response; the UI
+    matches exactly are returned, and final guides are relevance
+    filtered to syntheses covering at least one of this source's
+    records (Stage B scopes are Equipment + Failure Mode and may span
+    reports within the build; per-record provenance stays exact).
+    Empty states are explicit (``no_records_for_source``), and a deleted
+    backing report keeps its stable identity with ``source_deleted`` —
+    never remapped to another same-named file. Provenance (§17) rides on every response; the UI
     splits historical evidence (DATA_SUPPORTED) from LLM-derived
     interpretation (LLM_INFERRED) per record.
     """
@@ -997,6 +2335,31 @@ async def assemble_llm_guide(
         source_deleted = True
 
     records = await list_records(build_id, source_report_id)
+    member_ids: set = set()
+    for row in records:
+        member_ids.update(str(rid) for rid in row.get("batch_record_ids") or [])
+        if row.get("source_record_id"):
+            member_ids.add(str(row["source_record_id"]))
+    records = aggregate_failure_mode_records(records)
+    guides_all = await list_stage_b_guides(build_id)
+    if member_ids:
+        final_guides = [
+            guide for guide in guides_all
+            if set(guide.get("source_record_ids") or []) & member_ids
+        ]
+    elif not source_deleted:
+        # Record-less build (direct insight flow): scope guides by this
+        # report's analysis-key prefix — record IDs are deterministic
+        # f"{analysis_key}-LLMROW-{sheet}-{excel_row}".
+        analysis_key = str(report_internal.get("analysis_key") or "")
+        prefix = f"{analysis_key}-LLMROW-" if analysis_key else ""
+        final_guides = [
+            guide for guide in guides_all
+            if prefix and any(str(rid).startswith(prefix)
+                              for rid in guide.get("source_record_ids") or [])
+        ]
+    else:
+        final_guides = []
     if source_deleted:
         return {
             "knowledge_source": KNOWLEDGE_SOURCE_LLM,
@@ -1007,9 +2370,10 @@ async def assemble_llm_guide(
             "source_filename": None,
             "source_deleted": True,
             "records": [],
+            "final_guides": [],
             "warnings": ["source_deleted"],
         }
-    if not records:
+    if not records and not final_guides:
         return {
             "knowledge_source": KNOWLEDGE_SOURCE_LLM,
             "build_id": str(build["id"]),
@@ -1019,6 +2383,7 @@ async def assemble_llm_guide(
             "source_filename": report_filename,
             "source_deleted": False,
             "records": [],
+            "final_guides": [],
             "warnings": ["no_records_for_source"],
         }
     return {
@@ -1030,8 +2395,163 @@ async def assemble_llm_guide(
         "source_filename": report_filename,
         "source_deleted": False,
         "records": records,
+        "final_guides": final_guides,
         "warnings": [],
     }
+
+
+# --- failure-mode aggregation (M19: one knowledge entry per FM) ---------------
+
+
+AGGREGATION_LIST_FIELDS = (
+    "findings",
+    "candidate_causes",
+    "diagnostic_steps",
+    "corrective_actions",
+    "verification_steps",
+    "post_repair_events",
+)
+
+
+def _is_batch_row(row: Dict[str, Any]) -> bool:
+    # Legacy extraction batch rows only: Stage A evidence rows carry the
+    # same batch keys but are represented via final_guides, never merged
+    # into the old item-list entries.
+    return bool(row.get("batch_record_ids")) and row.get("stage_a_evidence") is None
+
+
+def _fm_aggregate_id(batch_id: str, equipment: str, failure_mode: str) -> str:
+    import hashlib
+
+    analysis_key = str(batch_id).split("-LLMBATCH-")[0]
+    digest = hashlib.sha1(
+        f"{equipment}\x00{failure_mode}".encode("utf-8")).hexdigest()[:8]
+    return f"{analysis_key}-LLMFM-{digest}"
+
+
+def aggregate_failure_mode_records(
+    rows: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Combine batch rows into one knowledge entry per failure mode (pure).
+
+    Batch rows sharing ``(build_id, source_report_id, equipment,
+    failure_mode)`` merge into a single entry shaped like a record row:
+    item lists concatenate in ``batch_index`` order with exact
+    ``(field, text, basis, source_quote)`` duplicates merged (their
+    ``support_ids`` united), ``symptom`` is the most frequent non-null
+    value (ties → lowest batch index), and member errors join into
+    ``record_error``. Rows without batch metadata (legacy per-record
+    builds) pass through unchanged, in place.
+    """
+    groups: Dict[Any, List[Dict[str, Any]]] = {}
+    order: List[Any] = []
+    for row in rows:
+        if not _is_batch_row(row):
+            continue
+        key = (
+            str(row.get("build_id")),
+            str(row.get("source_report_id")),
+            str(row.get("equipment") or ""),
+            str(row.get("failure_mode") or ""),
+        )
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(row)
+
+    entries: Dict[Any, Dict[str, Any]] = {}
+    for key, members in groups.items():
+        members = sorted(members, key=lambda r: (r.get("batch_index") or 0))
+        first = members[0]
+        seen: Dict[Any, Dict[str, Any]] = {}
+        merged: Dict[str, List[Dict[str, Any]]] = {
+            field: [] for field in AGGREGATION_LIST_FIELDS
+        }
+        for member in members:
+            for field in AGGREGATION_LIST_FIELDS:
+                for item in member.get(field) or []:
+                    item = item or {}
+                    dedupe = (
+                        field,
+                        str(item.get("text") or ""),
+                        str(item.get("basis") or ""),
+                        str(item.get("source_quote") or ""),
+                    )
+                    if dedupe in seen:
+                        united = seen[dedupe].setdefault("support_ids", [])
+                        for sid in item.get("support_ids") or []:
+                            if sid not in united:
+                                united.append(sid)
+                        continue
+                    copy = dict(item)
+                    copy["support_ids"] = list(item.get("support_ids") or [])
+                    seen[dedupe] = copy
+                    merged[field].append(copy)
+        symptoms: Dict[str, int] = {}
+        for member in members:
+            symptom = member.get("symptom")
+            if isinstance(symptom, str) and symptom.strip():
+                symptoms[symptom] = symptoms.get(symptom, 0) + 1
+        best_symptom: Optional[str] = None
+        if symptoms:
+            top = max(symptoms.values())
+            for member in members:
+                symptom = member.get("symptom")
+                if symptom in symptoms and symptoms[symptom] == top:
+                    best_symptom = symptom
+                    break
+        errors = [
+            str(m.get("record_error"))
+            for m in members if m.get("record_error")
+        ]
+        batch_ids = [str(m.get("source_record_id")) for m in members]
+        member_ids: List[str] = []
+        for member in members:
+            for rid in member.get("batch_record_ids") or []:
+                if rid not in member_ids:
+                    member_ids.append(rid)
+        entries[key] = {
+            "id": first.get("id"),
+            "build_id": first.get("build_id"),
+            "source_report_id": first.get("source_report_id"),
+            "source_record_id": _fm_aggregate_id(
+                str(first.get("source_record_id")),
+                str(first.get("equipment") or ""),
+                str(first.get("failure_mode") or ""),
+            ),
+            "source_text": "",
+            "symptom": best_symptom,
+            **merged,
+            "record_error": "; ".join(errors)[:500] if errors else None,
+            "created": first.get("created"),
+            "batch_index": None,
+            "equipment": first.get("equipment"),
+            "failure_mode": first.get("failure_mode"),
+            "batch_ids": batch_ids,
+            "batch_record_ids": member_ids,
+            "est_input_tokens": sum(
+                int(m.get("est_input_tokens") or 0) for m in members
+            ),
+            "batch_config": first.get("batch_config") or {},
+            "oversized": any(bool(m.get("oversized")) for m in members),
+        }
+
+    combined: List[Dict[str, Any]] = []
+    emitted = set()
+    for row in rows:
+        if not _is_batch_row(row):
+            combined.append(row)
+            continue
+        key = (
+            str(row.get("build_id")),
+            str(row.get("source_report_id")),
+            str(row.get("equipment") or ""),
+            str(row.get("failure_mode") or ""),
+        )
+        if key not in emitted:
+            emitted.add(key)
+            combined.append(entries[key])
+    return combined
 
 
 class BuildInProgressError(Exception):

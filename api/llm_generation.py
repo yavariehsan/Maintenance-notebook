@@ -1,18 +1,18 @@
-"""LLM provider abstraction for knowledge generation (M12 §10).
+"""LLM provider abstraction for knowledge generation (two-stage guide).
 
-``LLMKnowledgeGenerator`` turns one record's source text into the raw
-LLM response text. It reuses the existing provider architecture
+``LLMKnowledgeGenerator`` turns a prebuilt prompt into the raw LLM
+response text. It reuses the existing provider architecture
 (``provision_langchain_model`` → configured language model, large-context
 upgrade, ``ConfigurationError`` when unconfigured) and does nothing
-else: no validation (``llm_knowledge_service.parse_llm_extraction``),
-no persistence, no UI, no database access. No embeddings are involved.
+else: no validation, no persistence, no UI, no database access. No
+embeddings are involved.
 """
 
 from __future__ import annotations
 
 import asyncio
 from functools import partial
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 from loguru import logger
 
@@ -20,22 +20,8 @@ from api import llm_knowledge_service as llm_knowledge
 from open_notebook.ai.provision import provision_langchain_model
 from open_notebook.utils.error_classifier import classify_error
 
-#: Hard cap per record so one stuck provider call cannot wedge a build.
+#: Hard cap per call so one stuck provider call cannot wedge a build.
 GENERATION_TIMEOUT_SECONDS = 300
-
-#: Minimal fixed probe input for the build preflight (§7): small, REALISTIC
-#: M12-shaped Persian maintenance content, and fast. Any schema-valid
-#: extraction passes — including an all-empty one — because preflight
-#: tests the *generation path*, not any particular record's content.
-#: Deliberately NOT content-free: vacuous probe text elicits degenerate
-#: model confabulation unrelated to path viability.
-PREFLIGHT_SOURCE_TEXT = (
-    "کد فرایندی: M3\n"
-    "شرح درخواست: مشکل در تعویض ابزار (تعویض ابزار)\n"
-    "شرح تعمیر: با nck مشکل حل شد\n"
-    "حالت خرابی: مشکل در تعویض ابزار (تعویض ابزار)"
-)
-PREFLIGHT_RECORD_ID = "preflight"
 
 
 def _supports_reasoning_flag(model: object) -> bool:
@@ -72,28 +58,29 @@ class LLMKnowledgeGenerator:
     def prompt_version(self) -> str:
         return llm_knowledge.PROMPT_VERSION
 
-    async def generate(self, source_text: str, source_record_id: str) -> str:
-        """Return the raw LLM response for one record (may raise).
+    async def generate_from_messages(
+        self, system: str, user: str, max_tokens: Optional[int] = None,
+        structured: Optional[str] = "json",
+    ) -> str:
+        """Return the raw LLM response for a prebuilt prompt (may raise).
 
-        Hardened (M14) for thinking models: provider JSON mode is
-        requested through the existing ``structured`` plumbing and
-        reasoning is disabled per-invocation for Ollama chat models, so
-        the token budget produces the final structured answer instead of
-        an unbounded private reasoning trace. Temperature is fixed at 0:
-        extraction is a deterministic task and sampling variance
-        (esperanto's 1.0 default) measurably breaks schema compliance on
-        small models (1/3 valid at 1.0 vs 3/3 byte-identical at 0).
-        Non-Ollama providers are invoked exactly as before, at the
-        deterministic temperature.
+        Shared generation path: identical provisioning, timeout, and
+        error mapping — only the prompt differs. ``max_tokens`` ``None``
+        preserves the provider default; an explicit value is forwarded
+        through the existing config mechanism. ``structured`` selects the
+        provider JSON lever (``"json"``) or plain text (``None``) for
+        prose outputs such as the Stage B guide.
         """
-        system, user = llm_knowledge.build_extraction_prompt(
-            source_text, source_record_id
-        )
         payload = f"{system}\n\n{user}"
+        provision_kwargs: Dict[str, Any] = {
+            "structured": structured, "temperature": 0,
+        }
+        if max_tokens is not None:
+            provision_kwargs["max_tokens"] = max_tokens
         try:
             model = await provision_langchain_model(
                 payload, self._model_id, "transformation",
-                structured="json", temperature=0,
+                **provision_kwargs,
             )
         except Exception as e:
             exc_class, message = classify_error(e)
@@ -128,31 +115,27 @@ class LLMKnowledgeGenerator:
             raise exc_class(message) from e
 
 
-async def default_generate(
-    source_text: str, source_record_id: str, model_id: Optional[str] = None
-) -> str:
-    """Module-level entry point (worker default; replaceable in tests)."""
-    return await LLMKnowledgeGenerator(model_id=model_id).generate(
-        source_text, source_record_id
-    )
-
-
 async def preflight_llm_generation(model_id: Optional[str] = None) -> None:
     """Fail-fast probe of the generation path (M14 §7).
 
-    Runs one minimal M12-shaped generation through the real path and
-    requires schema-valid output. Raises ``ConfigurationError`` with an
-    actionable message when the provider/model cannot satisfy the
-    contract — callers must fail BEFORE creating build rows or
-    submitting commands, so one probe replaces dozens of predictable
-    per-record failures. Any valid extraction passes (content is
-    irrelevant; only path viability is tested).
+    Runs one minimal Stage A-shaped generation through the real path and
+    requires a structurally parseable evidence-shaped response. This is a
+    provider-capability check (connectivity, model resolution, JSON mode,
+    parsing) — it deliberately does NOT validate the sample against the
+    full Stage A evidence semantics, so incidental malformed sample
+    content never blocks build startup. Raises ``ConfigurationError``
+    with an actionable message when the provider/model cannot satisfy
+    the contract — callers must fail BEFORE creating build rows or
+    submitting commands. Real Stage A outputs are still validated by
+    ``parse_stage_a_evidence``.
     """
     from open_notebook.exceptions import ConfigurationError
 
+    budgets = llm_knowledge.resolve_generation_budgets()
+    system, user, member_ids = llm_knowledge.build_stage_a_preflight_prompt()
     try:
-        raw = await default_generate(
-            PREFLIGHT_SOURCE_TEXT, PREFLIGHT_RECORD_ID, model_id
+        raw = await LLMKnowledgeGenerator(model_id).generate_from_messages(
+            system, user, max_tokens=budgets["stage_a"]
         )
     except ConfigurationError:
         raise
@@ -163,45 +146,14 @@ async def preflight_llm_generation(model_id: Optional[str] = None) -> None:
             f"generation result ({message}). Check that the model is "
             "available and reachable before starting a build."
         ) from e
-    extraction, errors = llm_knowledge.parse_llm_extraction(raw)
-    if extraction is None:
+    ok, errors = llm_knowledge.parse_stage_a_preflight(raw)
+    if not ok:
         detail = "; ".join(errors) if errors else "unknown validation failure"
         raise ConfigurationError(
-            "LLM preflight failed: the model response did not validate "
-            f"against the knowledge schema ({detail}). The configured "
-            "model may need reasoning disabled or JSON-mode support to "
-            "return structured output."
+            "LLM preflight failed: the provider/model did not return a "
+            f"usable structured response ({detail}). Check that the model "
+            "supports JSON mode and is reachable before starting a build."
         )
-
-
-def split_provenance(
-    record: dict,
-) -> Tuple[dict, dict]:
-    """Split one stored record into historical vs inferred item groups.
-
-    Pure presentation helper for the Guide UI (§18): DATA_SUPPORTED
-    items (plus symptom when explicitly backed — symptom itself carries
-    no per-item basis, so it stays with the historical header alongside
-    the verbatim source text) vs LLM_INFERRED interpretation.
-    """
-    historical: Dict[str, Any] = {"symptom": record.get("symptom"), "items": []}
-    inferred: Dict[str, Any] = {"items": []}
-    for field in (
-        "findings",
-        "candidate_causes",
-        "diagnostic_steps",
-        "corrective_actions",
-        "verification_steps",
-        "post_repair_events",
-    ):
-        for item in record.get(field) or []:
-            target = (
-                historical
-                if (item or {}).get("basis") == llm_knowledge.BASIS_SUPPORTED
-                else inferred
-            )
-            target["items"].append({"field": field, **(item or {})})
-    return historical, inferred
 
 
 logger.debug("LLM knowledge generator module loaded")

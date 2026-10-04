@@ -1,0 +1,8 @@
+-- Migration 30 down: remove the Stage B synthesis indexes.
+--
+-- Non-destructive: no rows are deleted and the table is kept (it may
+-- hold synthesis history worth auditing after a rollback).
+
+REMOVE INDEX IF EXISTS idx_stage_b_unique ON TABLE llm_stage_b_guide;
+REMOVE INDEX IF EXISTS idx_stage_b_scope ON TABLE llm_stage_b_guide;
+REMOVE INDEX IF EXISTS idx_stage_b_build ON TABLE llm_stage_b_guide;

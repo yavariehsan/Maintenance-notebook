@@ -69,3 +69,27 @@ def test_migration_29_registered_in_manager():
     ).read_text(encoding="utf-8-sig")
     assert "migrations/29.surrealql" in manager
     assert "migrations/29_down.surrealql" in manager
+
+
+def test_migration_30_creates_stage_b_guide_table():
+    text = _read("30.surrealql")
+    assert "DEFINE TABLE IF NOT EXISTS llm_stage_b_guide SCHEMALESS" in text
+    assert "idx_stage_b_unique" in text
+    assert "UNIQUE" in text
+    assert "SCHEMAFULL" not in _body("30.surrealql")
+    assert "REMOVE TABLE" not in text
+    assert "DELETE llm_stage_b_guide" not in text
+
+
+def test_migration_30_down_is_non_destructive_rollback():
+    text = _read("30_down.surrealql")
+    assert "DELETE llm_stage_b_guide" not in text
+    assert "REMOVE TABLE" not in text
+
+
+def test_migration_30_registered_in_manager():
+    manager = (
+        REPO_ROOT / "open_notebook" / "database" / "async_migrate.py"
+    ).read_text(encoding="utf-8-sig")
+    assert "migrations/30.surrealql" in manager
+    assert "migrations/30_down.surrealql" in manager

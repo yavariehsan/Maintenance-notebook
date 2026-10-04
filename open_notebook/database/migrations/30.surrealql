@@ -1,0 +1,15 @@
+-- Migration 30: Stage B synthesis guides (two-stage LLM guide generation).
+--
+-- One row per (build, equipment, failure mode): the final Persian
+-- operational troubleshooting guide produced by the Stage B LLM
+-- synthesis over ALL Stage A evidence packages of that scope.
+-- Additive and row-preserving: no existing rows or tables are touched.
+-- Tables stay SCHEMALESS per the migration 28 decision (schemafull
+-- array/object fields silently drop values on SurrealDB 2.6.5).
+
+DEFINE TABLE IF NOT EXISTS llm_stage_b_guide SCHEMALESS;
+DEFINE INDEX IF NOT EXISTS idx_stage_b_build ON TABLE llm_stage_b_guide FIELDS build_id;
+DEFINE INDEX IF NOT EXISTS idx_stage_b_scope ON TABLE llm_stage_b_guide FIELDS equipment, failure_mode;
+-- Resume safety: one synthesis per scope; the database rejects
+-- accidental double-synthesis of the same scope.
+DEFINE INDEX IF NOT EXISTS idx_stage_b_unique ON TABLE llm_stage_b_guide FIELDS build_id, equipment, failure_mode UNIQUE;

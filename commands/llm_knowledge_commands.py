@@ -1,20 +1,23 @@
-"""LLM knowledge-build worker (surreal-commands, M12).
+"""LLM knowledge-build worker (surreal-commands, M12/M19).
 
 ``generate_llm_knowledge`` runs one ``llm_knowledge_build``: deterministic
-row extraction per report (no embeddings), one structured LLM call per
-record, validation + semantic post-rules, then persistence. Previous
-builds, mining knowledge, reports, and embeddings are never touched.
+scope planning per (Equipment, Failure Mode) — never mixing equipment or
+failure modes — one direct LLM call per scope producing the final Persian
+troubleshooting insight, which is persisted as-is (never rewritten).
+Previous builds, mining knowledge, reports, and embeddings are never
+touched.
 
-Idempotent resume: records already persisted for the build (unique index
-on build_id + source_record_id) are skipped, so a retried job continues
-instead of duplicating. A failed record is persisted with its
-``record_error`` and never invalidates the records that succeeded
-(completed / partial / failed terminal states reflect the mix).
+Idempotent resume: scopes already guided for the build (unique index on
+build_id + equipment + failure_mode) are skipped, so a retried job
+continues instead of duplicating. A failed scope never invalidates the
+scopes that succeeded (completed / partial / failed terminal states
+reflect the mix).
 
 Permanent problems (unknown build, missing workbook, unconfigured
 language model) raise ``ValueError``/``ConfigurationError`` so the job
-is marked ``failed`` without burning retries; anything else retries and
-resumes.
+is marked ``failed`` without burning retries. Unexpected failures
+finalize the build as failed with the cause recorded — a build is never
+left running.
 
 NOTE: this module must NOT use ``from __future__ import annotations``.
 The surreal-commands registry resolves the command's input/output type
@@ -48,26 +51,31 @@ class GenerateLLMKnowledgeOutput(CommandOutput):
     error_message: Optional[str] = None
 
 
-#: (source_text, source_record_id, model_id) -> raw LLM response text.
+#: (system, user, scope_id, model_id, max_tokens) -> raw LLM response text.
 #: Module seam: tests inject a fake; production uses the real generator.
-GenerateFn = Callable[[str, str, Optional[str]], Awaitable[str]]
+BatchGenerateFn = Callable[
+    [str, str, str, Optional[str], Optional[int]], Awaitable[str]
+]
 
 
-async def _default_generate_fn(
-    source_text: str, source_record_id: str, model_id: Optional[str]
+async def _default_batch_generate_fn(
+    system: str, user: str, batch_id: str, model_id: Optional[str],
+    max_tokens: Optional[int] = None,
 ) -> str:
-    from api.llm_generation import default_generate
+    from api.llm_generation import LLMKnowledgeGenerator
 
-    return await default_generate(source_text, source_record_id, model_id)
+    return await LLMKnowledgeGenerator(model_id).generate_from_messages(
+        system, user, max_tokens=max_tokens
+    )
 
 
-_GENERATE_FN: GenerateFn = _default_generate_fn
+_BATCH_GENERATE_FN: BatchGenerateFn = _default_batch_generate_fn
 
 
-def set_generate_fn(fn: GenerateFn) -> None:
+def set_generate_fn(fn: BatchGenerateFn) -> None:
     """Override the LLM call (tests only — never in production)."""
-    global _GENERATE_FN
-    _GENERATE_FN = fn
+    global _BATCH_GENERATE_FN
+    _BATCH_GENERATE_FN = fn
 
 
 async def _heartbeat_once(command_id: str) -> None:
@@ -154,9 +162,9 @@ async def generate_llm_knowledge_command(
             )
 
         try:
-            done_ids = await llm_knowledge.existing_source_record_ids(build_id)
+            done_scopes = await llm_knowledge._existing_stage_b_scopes(build_id)
         except Exception as e:
-            raise ValueError(f"Could not read existing LLM records: {e}") from e
+            raise ValueError(f"Could not read existing LLM guides: {e}") from e
 
         model_id = build.get("model")
         if not model_id:
@@ -171,15 +179,20 @@ async def generate_llm_knowledge_command(
         if not manifest:
             raise ValueError("LLM knowledge build has no report manifest.")
 
-        ok_count = len(done_ids)
+        ok_count = len(done_scopes)
         failed_count = 0
         warnings: List[str] = []
+        seen_reports = set()
 
         for entry in manifest:
             report_id = str(entry.get("report_id") or "")
             if not report_id:
                 warnings.append("manifest_entry_without_report_id")
                 continue
+            if report_id in seen_reports:
+                warnings.append(f"duplicate_manifest_report:{report_id}")
+                continue
+            seen_reports.add(report_id)
             try:
                 content = await reports.read_report_file(report_id)
             except Exception as e:
@@ -201,77 +214,26 @@ async def generate_llm_knowledge_command(
                 analysis_key = str(internal.get("analysis_key") or "nokey")
             except Exception as e:
                 raise ValueError(f"Unknown repair report: {report_id}: {e}") from e
-            inputs = llm_knowledge.extract_record_inputs(
+            scopes = llm_knowledge.plan_scope_insights(
                 analysis_key, sheet, headers, data_rows
             )
-            if not inputs:
+            if not scopes:
                 warnings.append(f"no_text_rows:{report_id}")
                 continue
-            for record_input in inputs:
-                source_record_id = str(record_input["source_record_id"])
-                if source_record_id in done_ids:
-                    continue
-                source_text = str(record_input["source_text"])
-                try:
-                    raw = await _GENERATE_FN(source_text, source_record_id, model_id)
-                except (ValueError, ConfigurationError):
-                    raise
-                except Exception as e:
-                    record_error = f"provider_error: {e}"[:500]
-                    try:
-                        await llm_knowledge.save_record(
-                            build_id,
-                            report_id,
-                            source_record_id,
-                            source_text,
-                            None,
-                            record_error,
-                        )
-                    except Exception as save_error:  # pragma: no cover - defensive
-                        logger.error(f"Could not persist failed LLM record: {save_error}")
-                    failed_count += 1
-                    done_ids.add(source_record_id)
-                    continue
-                extraction, parse_errors = llm_knowledge.parse_llm_extraction(raw)
-                if extraction is None:
-                    record_error = "; ".join(parse_errors)[:500] or "invalid_llm_output"
-                    try:
-                        await llm_knowledge.save_record(
-                            build_id,
-                            report_id,
-                            source_record_id,
-                            source_text,
-                            None,
-                            record_error,
-                        )
-                    except Exception as save_error:  # pragma: no cover - defensive
-                        logger.error(f"Could not persist failed LLM record: {save_error}")
-                    failed_count += 1
-                    done_ids.add(source_record_id)
-                    continue
-                extraction = llm_knowledge.apply_semantic_rules(extraction)
-                record_warnings = [
-                    message for message in parse_errors if message.startswith("warning:")
-                ]
-                try:
-                    await llm_knowledge.save_record(
-                        build_id,
-                        report_id,
-                        source_record_id,
-                        source_text,
-                        extraction,
-                        "; ".join(record_warnings)[:500] if record_warnings else None,
-                    )
-                except Exception as e:
-                    # Unique-index collision means a retried attempt already
-                    # wrote this record — count it once, never duplicate.
-                    message = str(e)
-                    if "unique" in message.lower() or "duplicate" in message.lower():
-                        logger.debug(f"LLM record {source_record_id} already stored")
-                    else:
-                        raise
-                ok_count += 1
-                done_ids.add(source_record_id)
+            scope_records = {
+                str(scope["scope_id"]): llm_knowledge.plan_scope_records(
+                    scope, headers, data_rows)
+                for scope in scopes
+            }
+            ok, failed, scope_warnings = \
+                await llm_knowledge.run_scope_insights_for_build(
+                    scopes, scope_records, build_id, model_id,
+                    _BATCH_GENERATE_FN,
+                )
+            ok_count += ok
+            failed_count += failed
+            warnings.extend(scope_warnings)
+            done_scopes = await llm_knowledge._existing_stage_b_scopes(build_id)
 
         if ok_count > 0 and failed_count == 0:
             terminal = llm_knowledge.BUILD_COMPLETED
@@ -282,7 +244,7 @@ async def generate_llm_knowledge_command(
         error = (
             None
             if terminal != llm_knowledge.BUILD_FAILED
-            else "All LLM extractions failed; see record_error on records."
+            else "All LLM insight scopes failed; see build warnings."
         )
         await llm_knowledge.mark_build_finished(
             build_id,
@@ -306,10 +268,20 @@ async def generate_llm_knowledge_command(
     except (ValueError, ConfigurationError) as e:
         await _fail_build(build_id, str(e))
         raise
-    except Exception:
-        # Transient: leave the build running for retry (resume skips
-        # records already persisted — never duplicates).
-        raise
+    except Exception as e:
+        # Never leave the build running: an unexpected failure finalizes
+        # it as failed (with the cause recorded) instead of orphaning it
+        # for a retry that can no longer resume anything.
+        message = f"LLM knowledge build failed: {e}"[:500]
+        await _fail_build(build_id, message)
+        return GenerateLLMKnowledgeOutput(
+            success=False,
+            build_id=build_id,
+            records=0,
+            failed_records=0,
+            processing_time=time.time() - start_time,
+            error_message=message,
+        )
     finally:
         stop_heartbeat.set()
         if heartbeat_task is not None:
