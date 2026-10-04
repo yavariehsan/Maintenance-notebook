@@ -279,7 +279,7 @@ export interface CreateSourceChatSessionRequest {
 
 export interface UpdateSourceChatSessionRequest {
   title?: string
-  model_override?: string
+  model_override?: string | null
 }
 
 export interface SendMessageRequest {

@@ -22,6 +22,12 @@ export function useSourceChat(sourceId: string) {
   const [isStreaming, setIsStreaming] = useState(false)
   const [contextIndicators, setContextIndicators] = useState<SourceChatContextIndicator | null>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
+  // Synchronously-applied model selection. `undefined` means "no pending
+  // change" (follow the server session); `null` means "reset to default".
+  // This closes the race where the sessions-list query still holds the old
+  // model after a save: the selector UI and the next request must agree
+  // immediately, without waiting for the background refetch.
+  const [pendingModelOverride, setPendingModelOverride] = useState<string | null | undefined>(undefined)
 
   // Fetch sessions
   const { data: sessions = [], isLoading: loadingSessions, refetch: refetchSessions } = useQuery<SourceChatSession[]>({
@@ -43,7 +49,6 @@ export function useSourceChat(sourceId: string) {
       setMessages(currentSession.messages)
     }
   }, [currentSession])
-
   // Auto-select most recent session when sessions are loaded
   useEffect(() => {
     if (sessions.length > 0 && !currentSessionId) {
@@ -53,6 +58,26 @@ export function useSourceChat(sourceId: string) {
     }
   }, [sessions, currentSessionId])
 
+  // Session object for the active conversation (source of the persisted model).
+  const listedCurrentSession = sessions.find(s => s.id === currentSessionId)
+  const serverModelOverride = listedCurrentSession?.model_override ?? undefined
+  // Synchronous view of the selected model: a just-saved pending change wins
+  // over the sessions-list cache until the server refetch catches up.
+  const effectiveModelOverride = pendingModelOverride !== undefined
+    ? (pendingModelOverride ?? undefined)
+    : serverModelOverride
+
+  // Drop the pending change once the server state reflects it, so the
+  // persisted session becomes the single source of truth again.
+  useEffect(() => {
+    if (
+      pendingModelOverride !== undefined &&
+      serverModelOverride === (pendingModelOverride ?? undefined)
+    ) {
+      setPendingModelOverride(undefined)
+    }
+  }, [pendingModelOverride, serverModelOverride])
+
   // Create session mutation
   const createSessionMutation = useMutation({
     mutationFn: (data: Omit<CreateSourceChatSessionRequest, 'source_id'>) => 
@@ -60,6 +85,8 @@ export function useSourceChat(sourceId: string) {
     onSuccess: (newSession) => {
       queryClient.invalidateQueries({ queryKey: ['sourceChatSessions', sourceId] })
       setCurrentSessionId(newSession.id)
+      // A freshly created session starts from the server state.
+      setPendingModelOverride(undefined)
       toast.success(t('chat.sessionCreated'))
     },
     onError: (err: unknown) => {
@@ -77,9 +104,16 @@ export function useSourceChat(sourceId: string) {
       queryClient.invalidateQueries({ queryKey: ['sourceChatSession', sourceId, currentSessionId] })
       toast.success(t('chat.sessionUpdated'))
     },
-    onError: (err: unknown) => {
+    onError: (err: unknown, variables) => {
       const error = err as { response?: { data?: { detail?: string } }, message?: string };
       toast.error(getApiErrorMessage(error.response?.data?.detail || error.message, (key) => t(key), 'apiErrors.failedToUpdateSession'))
+      // The model save failed: revert to the server truth, but only if no
+      // newer model change superseded the failed one. Title-only updates
+      // never touch the pending model selection.
+      if (variables?.data && 'model_override' in variables.data) {
+        const failedModel = variables.data.model_override ?? null
+        setPendingModelOverride(prev => (prev === failedModel ? undefined : prev))
+      }
     }
   })
 
@@ -92,6 +126,8 @@ export function useSourceChat(sourceId: string) {
       if (currentSessionId === deletedId) {
         setCurrentSessionId(null)
         setMessages([])
+        // The pending selection belonged to the deleted session.
+        setPendingModelOverride(undefined)
       }
       toast.success(t('chat.sessionDeleted'))
     },
@@ -101,17 +137,28 @@ export function useSourceChat(sourceId: string) {
     }
   })
 
-  // Send message with streaming
+  // Send message with streaming.
+  // The model for this request resolves as: explicit per-message override,
+  // then the synchronously-applied selection (pending or persisted session
+  // value). The explicit parameter and the pending state agree in the normal
+  // UI flow (the composer forwards the effective selection), while the
+  // pending fallback covers sends issued before the sessions-list refetch.
   const sendMessage = useCallback(async (message: string, modelOverride?: string) => {
+    const resolvedModelOverride = modelOverride ?? effectiveModelOverride
     let sessionId = currentSessionId
 
     // Auto-create session if none exists
     if (!sessionId) {
       try {
         const defaultTitle = message.length > 30 ? `${message.substring(0, 30)}...` : message
-        const newSession = await sourceChatApi.createSession(sourceId, { title: defaultTitle })
+        const newSession = await sourceChatApi.createSession(sourceId, {
+          title: defaultTitle,
+          ...(resolvedModelOverride ? { model_override: resolvedModelOverride } : {}),
+        })
         sessionId = newSession.id
         setCurrentSessionId(sessionId)
+        // The pending selection (if any) is now persisted on the new session.
+        setPendingModelOverride(undefined)
         queryClient.invalidateQueries({ queryKey: ['sourceChatSessions', sourceId] })
       } catch (err: unknown) {
         const error = err as { response?: { data?: { detail?: string } }, message?: string };
@@ -131,17 +178,21 @@ export function useSourceChat(sourceId: string) {
     setMessages(prev => [...prev, userMessage])
     setIsStreaming(true)
 
+    const controller = new AbortController()
+    abortControllerRef.current = controller
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null
+
     try {
       const response = await sourceChatApi.sendMessage(sourceId, sessionId, {
         message,
-        model_override: modelOverride
-      })
+        model_override: resolvedModelOverride
+      }, { signal: controller.signal })
 
       if (!response) {
         throw new Error('No response body')
       }
 
-      const reader = response.getReader()
+      reader = response.getReader()
       const decoder = new TextDecoder()
       let aiMessage: SourceChatMessage | null = null
       let buffer = ''
@@ -200,27 +251,45 @@ export function useSourceChat(sourceId: string) {
       }
     } catch (err: unknown) {
       const error = err as { response?: { data?: { detail?: string } }, message?: string };
-      console.error('Error sending message:', error)
-      toast.error(getApiErrorMessage(error.response?.data?.detail || error.message, (key) => t(key), 'apiErrors.failedToSendMessage'))
+      // User cancellation is cleanup-only: the request is gone, but that is
+      // not an error worth surfacing.
+      if ((error as { name?: string })?.name === 'AbortError') {
+        console.debug('Source chat request aborted')
+      } else {
+        console.error('Error sending message:', error)
+        toast.error(getApiErrorMessage(error.response?.data?.detail || error.message, (key) => t(key), 'apiErrors.failedToSendMessage'))
+      }
       // Remove optimistic messages on error
       setMessages(prev => prev.filter(msg => !msg.id.startsWith('temp-')))
     } finally {
+      if (abortControllerRef.current === controller) {
+        abortControllerRef.current = null
+      }
+      // Release the stream reader so a failed/aborted request never leaves
+      // the stream locked; a no-op once the stream was fully consumed.
+      try {
+        await reader?.cancel()
+      } catch {
+        // Ignore cleanup errors (already-closed or errored streams).
+      }
       setIsStreaming(false)
       // Refetch session to get persisted messages
       refetchCurrentSession()
     }
-  }, [sourceId, currentSessionId, refetchCurrentSession, queryClient, t])
+  }, [sourceId, currentSessionId, effectiveModelOverride, refetchCurrentSession, queryClient, t])
 
   // Cancel streaming
   const cancelStreaming = useCallback(() => {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort()
-      setIsStreaming(false)
-    }
+    abortControllerRef.current?.abort()
+    setIsStreaming(false)
   }, [])
 
   // Switch session
   const switchSession = useCallback((sessionId: string) => {
+    // A pending selection belongs to the previous session; the newly
+    // selected session brings its own persisted model.
+    setPendingModelOverride(undefined)
+    abortControllerRef.current?.abort()
     setCurrentSessionId(sessionId)
     setContextIndicators(null)
   }, [])
@@ -240,22 +309,40 @@ export function useSourceChat(sourceId: string) {
     return deleteSessionMutation.mutate(sessionId)
   }, [deleteSessionMutation])
 
+  // Set the model override. Applies synchronously (selector UI and the next
+  // request agree immediately) and persists to the session in the background.
+  // `null` resets to the default model. Without a session yet, the value is
+  // held pending and applied when sendMessage auto-creates the session.
+  const setModelOverride = useCallback((model: string | null) => {
+    setPendingModelOverride(model)
+    if (currentSessionId) {
+      updateSessionMutation.mutate({
+        sessionId: currentSessionId,
+        data: { model_override: model }
+      })
+    }
+  }, [currentSessionId, updateSessionMutation])
+
   return {
     // State
     sessions,
-    currentSession: sessions.find(s => s.id === currentSessionId),
+    currentSession: listedCurrentSession,
     currentSessionId,
     messages,
     isStreaming,
     contextIndicators,
     loadingSessions,
-    
+    // Synchronously-applied model selection (`string`: override id,
+    // `null`: pending reset to default, `undefined`: follow the session).
+    pendingModelOverride,
+
     // Actions
     createSession,
     updateSession,
     deleteSession,
     switchSession,
     sendMessage,
+    setModelOverride,
     cancelStreaming,
     refetchSessions
   }

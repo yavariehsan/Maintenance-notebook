@@ -59,11 +59,15 @@ export default function SourceDetailPage() {
             isStreaming={chat.isStreaming}
             contextIndicators={chat.contextIndicators}
             onSendMessage={(message, model) => chat.sendMessage(message, model)}
-            modelOverride={chat.currentSession?.model_override}
+            // Pending-first: a just-saved model change applies to the next
+            // request immediately, without waiting for the sessions refetch.
+            modelOverride={
+              chat.pendingModelOverride !== undefined
+                ? (chat.pendingModelOverride ?? undefined)
+                : chat.currentSession?.model_override
+            }
             onModelChange={(model) => {
-              if (chat.currentSessionId) {
-                chat.updateSession(chat.currentSessionId, { model_override: model })
-              }
+              chat.setModelOverride(model ?? null)
             }}
             sessions={chat.sessions}
             currentSessionId={chat.currentSessionId}

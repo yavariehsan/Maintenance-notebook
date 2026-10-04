@@ -1,6 +1,8 @@
 'use client'
 
 import { useMemo, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 
 import { AppShell } from '@/components/layout/AppShell'
 import { Button } from '@/components/ui/button'
@@ -71,6 +73,7 @@ export function TroubleshootingGuideScreen() {
   const [selectedSourceId, setSelectedSourceId] = useState<string>('')
   const [selectedBuildId, setSelectedBuildId] = useState<string>('')
   const [selectedLlmSourceId, setSelectedLlmSourceId] = useState<string>('')
+  const [selectedFinalGuideId, setSelectedFinalGuideId] = useState<string>('')
 
   const {
     data: status,
@@ -200,6 +203,7 @@ export function TroubleshootingGuideScreen() {
     setSelectedSourceId('')
     setSelectedBuildId('')
     setSelectedLlmSourceId('')
+    setSelectedFinalGuideId('')
   }
 
   /**
@@ -562,7 +566,13 @@ export function TroubleshootingGuideScreen() {
             </CardHeader>
             <CardContent className="space-y-2">
               <Label htmlFor="llm-source">{t('troubleshootingGuide.sourceLabel')}</Label>
-              <Select value={selectedLlmSourceId} onValueChange={setSelectedLlmSourceId}>
+              <Select
+                value={selectedLlmSourceId}
+                onValueChange={(value) => {
+                  setSelectedLlmSourceId(value)
+                  setSelectedFinalGuideId('')
+                }}
+              >
                 <SelectTrigger id="llm-source" className="w-full">
                   <SelectValue placeholder={t('troubleshootingGuide.sourcePlaceholder')} />
                 </SelectTrigger>
@@ -626,7 +636,7 @@ export function TroubleshootingGuideScreen() {
         />
       )
     }
-    if (llmGuide.warnings.includes('no_records_for_source') || llmGuide.records.length === 0) {
+    if (llmGuide.warnings.includes('no_records_for_source') || (llmGuide.final_guides.length === 0 && llmGuide.records.length === 0)) {
       return (
         <EmptyState
           icon={LifeBuoy}
@@ -635,6 +645,11 @@ export function TroubleshootingGuideScreen() {
         />
       )
     }
+    const finalGuides = llmGuide.final_guides ?? []
+    const effectiveFinalGuide =
+      finalGuides.find((guide) => (guide.synthesis_id ?? '') === selectedFinalGuideId) ??
+      finalGuides[0] ??
+      null
     return (
       <div className="space-y-4" data-testid="llm-guide">
         <Card>
@@ -662,10 +677,72 @@ export function TroubleshootingGuideScreen() {
             </p>
           </CardContent>
         </Card>
-        {llmGuide.records.map(renderLlmRecord)}
+        {effectiveFinalGuide ? renderLlmFinalGuide(effectiveFinalGuide, finalGuides) : llmGuide.records.map(renderLlmRecord)}
       </div>
     )
   }
+
+  const renderLlmFinalGuide = (
+    guide: NonNullable<LLMGuide['final_guides'][number]>,
+    guides: NonNullable<LLMGuide['final_guides']>,
+  ) => (
+    <div className="space-y-4">
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">{t('troubleshootingGuide.llmFinalGuideTitle')}</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          <Label htmlFor="llm-final-guide">{t('troubleshootingGuide.llmFinalGuidePickerLabel')}</Label>
+          <Select
+            value={guide.synthesis_id ?? ''}
+            onValueChange={setSelectedFinalGuideId}
+          >
+            <SelectTrigger id="llm-final-guide" className="w-full" data-testid="llm-final-guide-picker">
+              <SelectValue placeholder={t('troubleshootingGuide.llmFinalGuidePickerLabel')} />
+            </SelectTrigger>
+            <SelectContent>
+              {guides.map((entry) => (
+                <SelectItem key={entry.synthesis_id ?? entry.failure_mode} value={entry.synthesis_id ?? ''}>
+                  {entry.equipment ?? '—'} · {entry.failure_mode ?? '—'}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <div className="flex flex-wrap gap-2">
+            <Badge variant="secondary" className="font-mono text-[11px]">
+              {t('troubleshootingGuide.evidenceCountLabel', { count: guide.record_count ?? 0 })}
+            </Badge>
+            <Badge variant="secondary" className="font-mono text-[11px]">
+              {t('troubleshootingGuide.llmFinalGuideBatches', { count: guide.batch_ids.length })}
+            </Badge>
+          </div>
+        </CardContent>
+      </Card>
+      <Card>
+        <CardContent className="pt-6">
+          <div className="prose prose-sm max-w-none dark:prose-invert" data-testid="llm-final-guide">
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={{
+                table: ({ children }) => (
+                  <div className="my-4 overflow-x-auto">
+                    <table className="min-w-full border-collapse border border-border">{children}</table>
+                  </div>
+                ),
+                thead: ({ children }) => <thead className="bg-muted">{children}</thead>,
+                tbody: ({ children }) => <tbody>{children}</tbody>,
+                tr: ({ children }) => <tr className="border-b border-border">{children}</tr>,
+                th: ({ children }) => <th className="border border-border px-3 py-2 text-start font-semibold">{children}</th>,
+                td: ({ children }) => <td className="border border-border px-3 py-2">{children}</td>,
+              }}
+            >
+              {guide.guide_markdown ?? ''}
+            </ReactMarkdown>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  )
 
   const renderGuide = () => {
     if (!selectedModeId) return null

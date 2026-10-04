@@ -65,6 +65,20 @@ export interface LLMKnowledgeRecord {
   created: string | null
 }
 
+export interface LLMFinalGuide {
+  synthesis_id: string | null
+  build_id: string | null
+  equipment: string | null
+  failure_mode: string | null
+  guide_markdown: string | null
+  record_count: number | null
+  batch_ids: string[]
+  source_record_ids: string[]
+  model: string | null
+  prompt_version: string | null
+  math_warnings: string[]
+}
+
 export interface LLMGuide {
   knowledge_source: 'LLM'
   build_id: string
@@ -74,6 +88,7 @@ export interface LLMGuide {
   source_filename: string | null
   source_deleted: boolean
   records: LLMKnowledgeRecord[]
+  final_guides: LLMFinalGuide[]
   warnings: string[]
 }
 

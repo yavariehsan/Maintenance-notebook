@@ -273,11 +273,14 @@ async def update_source_chat_session(
             await get_verified_source_session(source_id, session_id)
         )
 
-        # Update session fields
-        if request.title is not None:
-            session.title = request.title
-        if request.model_override is not None:
-            session.model_override = request.model_override
+        # Update session fields. exclude_unset distinguishes "not provided"
+        # from an explicit null (reset to the default model) — mirrors
+        # api/routers/chat.py update_session.
+        update_data = request.model_dump(exclude_unset=True)
+        if "title" in update_data:
+            session.title = update_data["title"]
+        if "model_override" in update_data:
+            session.model_override = update_data["model_override"]
 
         await session.save()
 

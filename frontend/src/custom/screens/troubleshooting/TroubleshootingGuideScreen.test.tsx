@@ -539,6 +539,7 @@ describe('TroubleshootingGuideScreen', () => {
     source_report_id: 'repair_report:aaa',
     source_filename: 'cmms.xlsx',
     source_deleted: false,
+    final_guides: [],
     records: [
       {
         id: 'llm_knowledge_record:1',
@@ -771,5 +772,94 @@ describe('TroubleshootingGuideScreen', () => {
         screen.getByText(/LLM knowledge build has no report manifest\./),
       ).toBeInTheDocument()
     })
+  })
+
+  const finalGuideA = {
+    synthesis_id: 'llm_stage_b_guide:s1',
+    build_id: 'llm_knowledge_build:12',
+    equipment: 'B138',
+    failure_mode: 'تعویض ابزار',
+    guide_markdown: '# ترتیب پیشنهادی تعمیرکار؛ نسخه عملیاتی\n\nمتن راهنمای یک',
+    record_count: 2,
+    batch_ids: ['k1-LLMBATCH-aa-000'],
+    source_record_ids: ['k1-LLMROW-Sheet1-2'],
+    model: 'model:chat',
+    prompt_version: 'stageab-v1',
+    math_warnings: [],
+  }
+
+  const finalGuideB = {
+    ...finalGuideA,
+    synthesis_id: 'llm_stage_b_guide:s2',
+    failure_mode: 'خرابی اسپیندل',
+    guide_markdown: '# ترتیب پیشنهادی تعمیرکار؛ نسخه عملیاتی\n\nمتن راهنمای دو',
+  }
+
+  async function openLlmGuide() {
+    const boxes = screen.getAllByRole('combobox')
+    fireEvent.click(boxes[boxes.length - 1])
+    fireEvent.click((await screen.findAllByRole('option'))[0])
+    await waitFor(() => {
+      expect(screen.getByTestId('llm-guide')).toBeInTheDocument()
+    })
+  }
+
+  it('renders the final Stage B guide as primary, not the extraction records', async () => {
+    mockAll({
+      modesData: [],
+      sourceReports: [sourceA, sourceB],
+      llmBuilds: [llmBuild],
+      llmGuideData: { ...llmGuideData, final_guides: [finalGuideA] },
+    })
+    render(<TroubleshootingGuideScreen />)
+    await switchToLLM()
+    await openLlmGuide()
+    // Final markdown is the primary output.
+    expect(screen.getByTestId('llm-final-guide')).toBeInTheDocument()
+    expect(screen.getByText(/متن راهنمای یک/)).toBeInTheDocument()
+    // Obsolete per-record extraction cards are not primary.
+    expect(
+      screen.queryByText('troubleshootingGuide.llmHistoricalTitle'),
+    ).not.toBeInTheDocument()
+  })
+
+  it('switches between failure-mode guides via the picker', async () => {
+    mockAll({
+      modesData: [],
+      sourceReports: [sourceA, sourceB],
+      llmBuilds: [llmBuild],
+      llmGuideData: { ...llmGuideData, final_guides: [finalGuideA, finalGuideB] },
+    })
+    render(<TroubleshootingGuideScreen />)
+    await switchToLLM()
+    await openLlmGuide()
+    expect(screen.getByText(/متن راهنمای یک/)).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('llm-final-guide-picker'))
+    fireEvent.click(await screen.findByRole('option', { name: /خرابی اسپیندل/ }))
+    await waitFor(() => {
+      expect(screen.getByText(/متن راهنمای دو/)).toBeInTheDocument()
+    })
+    expect(screen.queryByText(/متن راهنمای یک/)).not.toBeInTheDocument()
+  })
+
+  it('opens the final guide read-only from the guide query', async () => {
+    mockAll({
+      modesData: [],
+      sourceReports: [sourceA, sourceB],
+      llmBuilds: [llmBuild],
+      llmGuideData: { ...llmGuideData, final_guides: [finalGuideA] },
+    })
+    render(<TroubleshootingGuideScreen />)
+    await switchToLLM()
+    await openLlmGuide()
+    // Data flows from the read query; the screen holds no generation trigger.
+    expect(mockLLMGuide).toHaveBeenCalledWith(
+      'llm_knowledge_build:12',
+      'repair_report:aaa',
+    )
+    expect(screen.getByText(/متن راهنمای یک/)).toBeInTheDocument()
+    expect(
+      screen.queryByText('llmKnowledge.startBuildButton'),
+    ).not.toBeInTheDocument()
   })
 })

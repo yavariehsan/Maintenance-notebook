@@ -2,6 +2,7 @@ from ai_prompter import Prompter
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
+from loguru import logger
 from typing_extensions import TypedDict
 
 from open_notebook.ai.provision import provision_langchain_model
@@ -35,8 +36,14 @@ async def run_transformation(state: dict, config: RunnableConfig) -> dict:
         # plain render variable into a fixed, developer-authored template instead.
         # See docs/7-DEVELOPMENT/security.md (GHSA-f35w-wx37-26q7).
         instructions = transformation.prompt
-        default_prompts: DefaultPrompts = DefaultPrompts(transformation_instructions=None)
-        if default_prompts.transformation_instructions:
+        try:
+            default_prompts: DefaultPrompts = await DefaultPrompts.get_instance()  # type: ignore[assignment]
+        except Exception as e:
+            # The shared language/style policy is an additive constraint:
+            # a DB read failure must never break the transformation itself.
+            logger.debug(f"Could not load default prompts, using task prompt: {e}")
+            default_prompts = None  # type: ignore[assignment]
+        if default_prompts and default_prompts.transformation_instructions:
             instructions = f"{default_prompts.transformation_instructions}\n\n{instructions}"
 
         system_prompt = Prompter(prompt_template="transformation/execute").render(
