@@ -44,7 +44,11 @@ def get_secret_from_env(var_name: str) -> Optional[str]:
         try:
             path = Path(file_path)
             if path.exists() and path.is_file():
-                secret = path.read_text().strip()
+                # Pin UTF-8 explicitly: the default locale encoding mangles
+                # non-ASCII secrets (POSIX/ASCII locales raise, Windows
+                # code pages silently mojibake them), which breaks or
+                # silently disables password auth. Secret files are UTF-8.
+                secret = path.read_text(encoding="utf-8").strip()
                 if secret:
                     logger.debug(f"Loaded {var_name} from file: {file_path}")
                     return secret

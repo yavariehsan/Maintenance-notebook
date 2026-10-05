@@ -8,7 +8,7 @@ from typing_extensions import TypedDict
 from open_notebook.ai.provision import provision_langchain_model
 from open_notebook.domain.notebook import Source
 from open_notebook.domain.transformation import DefaultPrompts, Transformation
-from open_notebook.exceptions import OpenNotebookError
+from open_notebook.exceptions import InvalidInputError, OpenNotebookError
 from open_notebook.utils import clean_thinking_content
 from open_notebook.utils.error_classifier import classify_error
 from open_notebook.utils.text_utils import extract_text_content
@@ -31,6 +31,17 @@ async def run_transformation(state: dict, config: RunnableConfig) -> dict:
     try:
         if not content:
             content = source.full_text
+        content_str = str(content) if content else ""
+        # Never spend an LLM call on empty input: whitespace-only content
+        # carries no evidence, so any "insight" would be invented. Reject
+        # before provisioning (and therefore before any insight is persisted).
+        # InvalidInputError passes through the OpenNotebookError re-raise
+        # below unclassified (-> HTTP 400, never a success).
+        if not content_str.strip():
+            raise InvalidInputError(
+                "Cannot run a transformation on empty content: the source "
+                "has no text and no explicit input_text was provided."
+            )
         # transformation.prompt is user-controlled free text. Never compile it as
         # Jinja template *source* (Prompter(template_text=...)) - pass it as a
         # plain render variable into a fixed, developer-authored template instead.
@@ -49,7 +60,6 @@ async def run_transformation(state: dict, config: RunnableConfig) -> dict:
         system_prompt = Prompter(prompt_template="transformation/execute").render(
             data={**state, "instructions": instructions}
         )
-        content_str = str(content) if content else ""
         payload = [SystemMessage(content=system_prompt), HumanMessage(content=content_str)]
         chain = await provision_langchain_model(
             str(payload),

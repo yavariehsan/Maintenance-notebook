@@ -67,9 +67,21 @@ class PasswordAuthMiddleware(BaseHTTPMiddleware):
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-        # Check password (constant-time to avoid a timing side-channel)
+        # Check password (constant-time to avoid a timing side-channel).
+        # Both sides are compared as UTF-8 bytes: Starlette surfaces the raw
+        # header as latin-1 str, so re-encoding recovers the exact wire bytes,
+        # which are decoded as UTF-8 (the only encoding clients can send a
+        # non-ASCII password in). Undecodable input is a 401, never a 500.
+        try:
+            presented = credentials.encode("latin-1").decode("utf-8")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Invalid password"},
+                headers={"WWW-Authenticate": "Bearer"},
+            )
         if not secrets.compare_digest(
-            credentials.encode("latin-1"), self.password.encode("utf-8")
+            presented.encode("utf-8"), self.password.encode("utf-8")
         ):
             return JSONResponse(
                 status_code=401,
