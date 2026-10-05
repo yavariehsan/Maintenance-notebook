@@ -48,6 +48,11 @@ export function useSourceChat(sourceId: string) {
     if (currentSession?.messages) {
       setMessages(currentSession.messages)
     }
+    // Restore the context badge from the persisted session so it survives
+    // refresh and session switches (it is otherwise only set live mid-stream).
+    if (currentSession?.context_indicators) {
+      setContextIndicators(currentSession.context_indicators)
+    }
   }, [currentSession])
   // Auto-select most recent session when sessions are loaded
   useEffect(() => {

@@ -45,7 +45,11 @@ from loguru import logger
 from surreal_commands import CommandInput, CommandOutput, command
 
 from api import repair_report_service as reports
-from open_notebook.exceptions import ConfigurationError, NotFoundError
+from open_notebook.exceptions import (
+    ConfigurationError,
+    ContextLengthExceededError,
+    NotFoundError,
+)
 
 
 class AnalyzeRepairReportsInput(CommandInput):
@@ -114,7 +118,7 @@ def _resolve_database_path() -> Path:
         "wait_strategy": "exponential_jitter",
         "wait_min": 5,
         "wait_max": 120,
-        "stop_on": [ValueError, ConfigurationError],
+        "stop_on": [ValueError, ConfigurationError, ContextLengthExceededError],
         "retry_log_level": "debug",
     },
 )
@@ -367,7 +371,7 @@ async def _run_llm_phase(report_ids: List[str]) -> Optional[Dict[str, Any]]:
     # than completing the run with a silent LLM gap.
     try:
         outcome = await _run_llm_command(build_id)
-    except (ValueError, ConfigurationError) as e:
+    except (ValueError, ConfigurationError, ContextLengthExceededError) as e:
         # Permanent: the generate command already marked the build
         # failed. Mining still completes; the failed build stays
         # visible in Repair Guide (explicit, never silent success).

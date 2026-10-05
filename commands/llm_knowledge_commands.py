@@ -35,7 +35,10 @@ from surreal_commands import CommandInput, CommandOutput, command
 from api import llm_knowledge_service as llm_knowledge
 from api import repair_report_service as reports
 from open_notebook.database.repository import ensure_record_id, repo_query
-from open_notebook.exceptions import ConfigurationError
+from open_notebook.exceptions import (
+    ConfigurationError,
+    ContextLengthExceededError,
+)
 
 
 class GenerateLLMKnowledgeInput(CommandInput):
@@ -114,7 +117,7 @@ async def _fail_build(build_id: str, message: str) -> None:
         "wait_strategy": "exponential_jitter",
         "wait_min": 5,
         "wait_max": 120,
-        "stop_on": [ValueError, ConfigurationError],
+        "stop_on": [ValueError, ConfigurationError, ContextLengthExceededError],
         "retry_log_level": "debug",
     },
 )

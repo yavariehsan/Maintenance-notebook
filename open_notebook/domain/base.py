@@ -124,10 +124,19 @@ class ObjectModel(BaseModel):
                 return target_class(**result[0])
             else:
                 raise NotFoundError(f"{table_name} with id {id} not found")
+        except (NotFoundError, InvalidInputError):
+            # Genuinely missing (or invalid) identifiers keep their meaning:
+            # fail-fast/404 semantics downstream depend on these types.
+            raise
         except Exception as e:
+            # Infrastructure failures (connection, timeout, conflict) are NOT
+            # "record deleted": they stay retryable in workers and never
+            # masquerade as 404 in the API.
             logger.error(f"Error fetching object with id {id}: {str(e)}")
             logger.exception(e)
-            raise NotFoundError(f"Object with id {id} not found - {str(e)}")
+            raise DatabaseOperationError(
+                f"Database lookup failed for id {id} - {str(e)}"
+            ) from e
 
     @classmethod
     def _get_class_by_table_name(cls, table_name: str) -> Optional[Type["ObjectModel"]]:

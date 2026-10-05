@@ -74,6 +74,15 @@ async def run_transformation(state: dict, config: RunnableConfig) -> dict:
         response_content = extract_text_content(response.content)
         cleaned_content = clean_thinking_content(response_content)
 
+        # Empty model output carries no evidence: persisting it would invent
+        # an insight. Distinct from the empty-*input* guard above (which
+        # rejects before any LLM call), this rejects after invocation.
+        if not cleaned_content.strip():
+            raise InvalidInputError(
+                "The model returned an empty response for this "
+                "transformation; no insight was persisted."
+            )
+
         if source:
             await source.add_insight(transformation.title, cleaned_content)
 

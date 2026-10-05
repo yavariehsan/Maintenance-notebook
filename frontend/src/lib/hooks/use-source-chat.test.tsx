@@ -290,3 +290,93 @@ describe('useSourceChat model failure/recovery', () => {
     })
   })
 })
+
+describe('useSourceChat streaming decoder and badges (P1.4)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('restores context indicators from the loaded session', async () => {
+    const indicators = { sources: ['source:x'], insights: ['i1'], notes: [] }
+    vi.mocked(sourceChatApi.listSessions).mockResolvedValue([sessionA] as any)
+    vi.mocked(sourceChatApi.getSession).mockResolvedValue({
+      ...sessionA,
+      messages: [],
+      context_indicators: indicators,
+    } as any)
+    const hook = renderHook(() => useSourceChat('source:x'), {
+      wrapper: makeWrapper(),
+    })
+    await waitFor(() => expect(hook.result.current.currentSessionId).toBe('s1'))
+    await waitFor(() =>
+      expect(hook.result.current.contextIndicators).toEqual(indicators)
+    )
+  })
+
+  it('reassembles a UTF-8 event split mid-multibyte-character', async () => {
+    const result = await renderWithSessionA()
+    const content = 'پاسخ کامل مدل'
+    const event = `data: ${JSON.stringify({ type: 'ai_message', content })}\n\n`
+    // Prefix is pure ASCII, so the string index of the first Persian
+    // character equals its UTF-8 byte offset; +1 lands mid-character.
+    const splitAt = event.indexOf('پ') + 1
+    const bytes = new TextEncoder().encode(event)
+    const split = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(bytes.slice(0, splitAt))
+        controller.enqueue(bytes.slice(splitAt))
+        controller.close()
+      },
+    })
+    const tail = `data: ${JSON.stringify({ type: 'complete' })}\n\n`
+    const combined = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        const reader = split.getReader()
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          controller.enqueue(value)
+        }
+        controller.enqueue(new TextEncoder().encode(tail))
+        controller.close()
+      },
+    })
+    vi.mocked(sourceChatApi.sendMessage).mockResolvedValue(combined as any)
+
+    await act(async () => {
+      await result.current.sendMessage('q', 'model-a')
+    })
+
+    const aiMessages = result.current.messages.filter((m) => m.type === 'ai')
+    expect(aiMessages).toHaveLength(1)
+    expect(aiMessages[0].content).toBe(content)
+  })
+
+  it('decodes multiple events arriving in a single chunk', async () => {
+    const result = await renderWithSessionA()
+    const indicators = { sources: ['source:x'], insights: [], notes: [] }
+    const encoder = new TextEncoder()
+    const oneChunk = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(
+            `data: ${JSON.stringify({ type: 'ai_message', content: 'hi' })}\n\n` +
+              `data: ${JSON.stringify({ type: 'context_indicators', data: indicators })}\n\n` +
+              `data: ${JSON.stringify({ type: 'complete' })}\n\n`
+          )
+        )
+        controller.close()
+      },
+    })
+    vi.mocked(sourceChatApi.sendMessage).mockResolvedValue(oneChunk as any)
+
+    await act(async () => {
+      await result.current.sendMessage('q', 'model-a')
+    })
+
+    expect(
+      result.current.messages.some((m) => m.type === 'ai' && m.content === 'hi')
+    ).toBe(true)
+    expect(result.current.contextIndicators).toEqual(indicators)
+  })
+})

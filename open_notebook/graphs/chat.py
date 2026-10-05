@@ -13,7 +13,7 @@ from typing_extensions import TypedDict
 from open_notebook.ai.provision import provision_langchain_model
 from open_notebook.config import LANGGRAPH_CHECKPOINT_FILE
 from open_notebook.domain.notebook import Notebook
-from open_notebook.exceptions import OpenNotebookError
+from open_notebook.exceptions import ExternalServiceError, OpenNotebookError
 from open_notebook.utils import clean_thinking_content
 from open_notebook.utils.error_classifier import classify_error
 from open_notebook.utils.text_utils import extract_text_content
@@ -75,6 +75,12 @@ def call_model_with_messages(state: ThreadState, config: RunnableConfig) -> dict
         # Clean thinking content from AI response (e.g., <think>...</think> tags)
         content = extract_text_content(ai_message.content)
         cleaned_content = clean_thinking_content(content)
+        # An empty model reply is a provider-side failure, never a valid
+        # answer: surfacing it as an error keeps a blank turn out of history.
+        if not cleaned_content.strip():
+            raise ExternalServiceError(
+                "The model returned an empty response. Please try again."
+            )
         cleaned_message = ai_message.model_copy(update={"content": cleaned_content})
 
         return {"messages": cleaned_message}
