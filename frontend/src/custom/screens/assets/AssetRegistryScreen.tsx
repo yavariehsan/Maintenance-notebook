@@ -2,7 +2,6 @@
 
 import { Fragment, useState } from 'react'
 
-import { AppShell } from '@/components/layout/AppShell'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { EmptyState } from '@/components/common/EmptyState'
@@ -17,9 +16,11 @@ import { AssetDialog } from './AssetDialog'
 import { AssetImportDialog } from './AssetImportDialog'
 
 /**
- * Downstream Asset Registry screen. Owns equipment composition (list,
- * create/edit dialog, delete confirmation) while reusing upstream asset
- * infrastructure: assetsApi via hooks, ConfirmDialog, and UI primitives.
+ * Equipment-information database section (دیتابیس اطلاعات تجهیزات).
+ * Owns equipment composition (list, create/edit dialog, delete
+ * confirmation) while reusing upstream asset infrastructure: assetsApi
+ * via hooks, ConfirmDialog, and UI primitives. Rendered as a tab inside
+ * DatabasesScreen; it owns no shell of its own.
  */
 function AssetDetail({ label, value }: { label: string; value?: string | null }) {
   return (
@@ -242,31 +243,27 @@ export function AssetRegistryScreen() {
   }
 
   return (
-    <AppShell>
-      <div className="flex-1 overflow-y-auto bg-[var(--custom-page)] text-[var(--custom-foreground)]">
-        <div className="p-6 space-y-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="font-display text-2xl font-bold tracking-tight">{t('assets.title')}</h1>
-              <p className="mt-1 text-sm text-muted-foreground">{t('assets.description')}</p>
-            </div>
-            {assets && assets.length > 0 && (
-              <div className="flex gap-2">
-                <Button onClick={() => setImportOpen(true)} variant="outline">
-                  <FileSpreadsheet className="h-4 w-4 me-2" />
-                  {t('assets.importButton')}
-                </Button>
-                <Button onClick={openCreate}>
-                  <Plus className="h-4 w-4 me-2" />
-                  {t('assets.newAsset')}
-                </Button>
-              </div>
-            )}
-          </div>
-
-          {renderContent()}
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="font-display text-xl font-bold tracking-tight">{t('assets.title')}</h2>
+          <p className="mt-1 text-sm text-muted-foreground">{t('assets.description')}</p>
         </div>
+        {assets && assets.length > 0 && (
+          <div className="flex gap-2">
+            <Button onClick={() => setImportOpen(true)} variant="outline">
+              <FileSpreadsheet className="h-4 w-4 me-2" />
+              {t('assets.importButton')}
+            </Button>
+            <Button onClick={openCreate}>
+              <Plus className="h-4 w-4 me-2" />
+              {t('assets.newAsset')}
+            </Button>
+          </div>
+        )}
       </div>
+
+      {renderContent()}
 
       <AssetDialog
         open={dialogOpen}
@@ -289,6 +286,6 @@ export function AssetRegistryScreen() {
         confirmVariant="destructive"
         onConfirm={handleDeleteConfirm}
       />
-    </AppShell>
+    </div>
   )
 }

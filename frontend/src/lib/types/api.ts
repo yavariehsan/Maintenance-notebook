@@ -85,6 +85,49 @@ export interface EquipmentImportPreview {
   imported_count: number
 }
 
+export interface FailureModeResponse {
+  id: string
+  code: string
+  label: string
+  description: string
+  status: string
+  created: string
+  updated: string
+}
+
+export interface CreateFailureModeRequest {
+  code: string
+  label: string
+  description?: string
+  status?: string | null
+}
+
+export interface UpdateFailureModeRequest {
+  code?: string
+  label?: string
+  description?: string | null
+  status?: string | null
+}
+
+export interface FailureModeImportIssue {
+  row_number: number
+  code: string | null
+  message: string
+}
+
+export interface FailureModeImportRow {
+  row_number: number
+  code: string
+  label: string
+}
+
+export interface FailureModeImportPreview {
+  total_rows: number
+  valid_rows: FailureModeImportRow[]
+  issues: FailureModeImportIssue[]
+  imported_count: number
+}
+
 export type MaintenanceAskStatus = 'ok' | 'no_sources' | 'no_context'
 
 export interface MaintenanceSourceRef {

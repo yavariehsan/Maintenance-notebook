@@ -23,6 +23,15 @@ export type RepairAnalysisRunStatus =
   | 'completed'
   | 'failed'
 
+export type RepairReportLLMStatus =
+  | 'not_started'
+  | 'queued'
+  | 'running'
+  | 'completed'
+  | 'partial'
+  | 'failed'
+  | 'cancelled'
+
 export interface RepairReport {
   id: string
   filename: string
@@ -31,6 +40,7 @@ export interface RepairReport {
   column_count: number | null
   data_rows: number | null
   analysis_state: RepairReportAnalysisState
+  llm_status?: RepairReportLLMStatus | null
   last_run_id: string | null
   last_error: string | null
   created: string | null

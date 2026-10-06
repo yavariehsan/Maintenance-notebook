@@ -58,6 +58,12 @@ STATE_PROCESSING = "processing"
 STATE_COMPLETED = "completed"
 STATE_FAILED = "failed"
 
+#: Language-model analysis status for a report with no covering LLM
+#: build. This is the established "not started" representation for the
+#: repair-table LLM column (mirrors STATE_NOT_ANALYZED semantics for the
+#: mining analysis state): no build exists, so nothing is running.
+LLM_STATUS_NOT_STARTED = "not_started"
+
 ACTIVE_REPORT_STATES = (STATE_QUEUED, STATE_PROCESSING)
 
 #: Run lifecycle states.
@@ -270,6 +276,7 @@ def _report_row(row: Dict[str, Any]) -> Dict[str, Any]:
         "column_count": row.get("column_count"),
         "data_rows": row.get("data_rows"),
         "analysis_state": row.get("analysis_state", STATE_NOT_ANALYZED),
+        "llm_status": row.get("llm_status", LLM_STATUS_NOT_STARTED),
         "last_run_id": (
             str(row.get("last_run_id")) if row.get("last_run_id") else None
         ),
@@ -319,7 +326,36 @@ async def list_reports() -> List[Dict[str, Any]]:
     rows = await repo_query(
         f"SELECT * FROM {TABLE_REPORT} ORDER BY created DESC"
     )
+    await annotate_llm_status(rows or [])
     return [_report_row(row) for row in rows or []]
+
+
+async def annotate_llm_status(rows: List[Dict[str, Any]]) -> None:
+    """Fill each row's ``llm_status`` from the latest covering LLM build.
+
+    Mutates the given internal rows in place (no extra shape allocated).
+    Rows with no covering build keep the ``not_started`` default. A
+    failure in the LLM lookup degrades to ``not_started`` with a warning
+    instead of breaking the repair list: the mining analysis state
+    remains the authoritative signal and is unaffected.
+    """
+    from api import llm_knowledge_service as llm_knowledge
+
+    for row in rows:
+        report_id = str(row.get("id") or "")
+        if not report_id:
+            continue
+        try:
+            build = await llm_knowledge.find_latest_build_covering_report(
+                report_id
+            )
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning(
+                f"Could not resolve LLM status for {report_id}: {e}"
+            )
+            continue
+        if build is not None:
+            row["llm_status"] = str(build.get("status") or LLM_STATUS_NOT_STARTED)
 
 
 async def get_report(report_id: str) -> Dict[str, Any]:
@@ -329,6 +365,7 @@ async def get_report(report_id: str) -> Dict[str, Any]:
     )
     if not rows:
         raise NotFoundError(f"Unknown repair report: {report_id}.")
+    await annotate_llm_status([rows[0]])
     return _report_row(rows[0])
 
 

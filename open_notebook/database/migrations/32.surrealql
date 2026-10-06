@@ -1,0 +1,20 @@
+-- Migration 32: Create failure_mode table for the failure-mode database
+-- (Database B: دیتابیس حالت خرابی تجهیزات).
+-- Dedicated failure-mode records, completely separate from the
+-- equipment-information `asset` table: every failure-mode query targets
+-- `failure_mode` only. `code` is the equipment code linking the mode to
+-- its equipment (same case-insensitive convention as asset codes);
+-- `label` is the mode name. The pair (code, label) is unique so the
+-- same mode cannot be registered twice for one equipment.
+
+DEFINE TABLE failure_mode SCHEMAFULL;
+DEFINE FIELD code ON failure_mode TYPE string;
+DEFINE FIELD label ON failure_mode TYPE string;
+DEFINE FIELD description ON failure_mode TYPE option<string>;
+DEFINE FIELD status ON failure_mode TYPE option<string> DEFAULT "active";
+DEFINE FIELD created ON failure_mode TYPE option<datetime> DEFAULT time::now();
+DEFINE FIELD updated ON failure_mode TYPE option<datetime> DEFAULT time::now();
+
+-- Uniqueness backstop for the (code, label) pair; the API/service layer
+-- additionally rejects duplicates with user-facing messages before writing.
+DEFINE INDEX idx_failure_mode_code_label_unique ON TABLE failure_mode FIELDS code, label UNIQUE;

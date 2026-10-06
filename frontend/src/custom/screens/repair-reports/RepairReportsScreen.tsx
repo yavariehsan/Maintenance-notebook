@@ -55,6 +55,32 @@ function statusLabelKey(state: RepairReport['analysis_state']): string {
   }
 }
 
+/**
+ * Maps the real backend `llm_status` (latest covering LLM build state,
+ * or `not_started` when no build covers the report) to display labels.
+ * Never fabricated: missing/null degrades to the established
+ * `not_started` representation.
+ */
+function llmStatusLabelKey(status: RepairReport['llm_status']): string {
+  switch (status) {
+    case 'queued':
+      return 'llmKnowledge.statusQueued'
+    case 'running':
+      return 'llmKnowledge.statusRunning'
+    case 'completed':
+      return 'llmKnowledge.statusCompleted'
+    case 'partial':
+      return 'llmKnowledge.statusPartial'
+    case 'failed':
+      return 'llmKnowledge.statusFailed'
+    case 'cancelled':
+      return 'llmKnowledge.statusCancelled'
+    case 'not_started':
+    default:
+      return 'llmKnowledge.statusNotStarted'
+  }
+}
+
 export function RepairReportsScreen() {
   const { t, language } = useTranslation()
   const { toast } = useToast()
@@ -129,7 +155,7 @@ export function RepairReportsScreen() {
     }
     return (
       <div className="rounded-md border border-[var(--custom-border)] bg-[var(--custom-surface)] overflow-auto">
-        <table className="w-full min-w-[800px] outline-none table-fixed">
+        <table className="w-full min-w-[960px] outline-none table-fixed">
           <thead className="sticky top-0 bg-background z-10">
             <tr className="border-b">
               <th className="h-12 px-4 text-start align-middle font-medium text-muted-foreground">
@@ -140,6 +166,9 @@ export function RepairReportsScreen() {
               </th>
               <th className="h-12 px-4 text-start align-middle font-medium text-muted-foreground w-[170px]">
                 {t('repairReports.statusColumn')}
+              </th>
+              <th className="h-12 px-4 text-start align-middle font-medium text-muted-foreground w-[170px]">
+                {t('repairReports.llmStatusColumn')}
               </th>
               <th className="h-12 px-4 text-start align-middle font-medium text-muted-foreground w-[150px] hidden sm:table-cell">
                 {t('repairReports.updatedColumn')}
@@ -173,6 +202,11 @@ export function RepairReportsScreen() {
                 <td className="h-12 px-4">
                   <Badge variant="secondary" className="font-mono text-[11px]">
                     {t(statusLabelKey(report.analysis_state))}
+                  </Badge>
+                </td>
+                <td className="h-12 px-4">
+                  <Badge variant="secondary" className="font-mono text-[11px]">
+                    {t(llmStatusLabelKey(report.llm_status ?? 'not_started'))}
                   </Badge>
                 </td>
                 <td className="h-12 px-4 text-muted-foreground text-sm hidden sm:table-cell whitespace-nowrap">

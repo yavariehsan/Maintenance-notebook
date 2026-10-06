@@ -38,6 +38,12 @@ class RepairReportItem(BaseModel):
     analysis_state: str = Field(
         ..., description="not_analyzed | queued | processing | completed | failed"
     )
+    llm_status: str = Field(
+        "not_started",
+        description="Latest covering LLM build status "
+        "(queued | running | completed | partial | failed | cancelled), "
+        "or not_started when no LLM build covers this report",
+    )
     last_run_id: Optional[str] = Field(
         None, description="Latest analysis run covering this report"
     )

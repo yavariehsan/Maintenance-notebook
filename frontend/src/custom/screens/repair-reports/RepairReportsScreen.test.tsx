@@ -96,6 +96,24 @@ describe('RepairReportsScreen', () => {
     expect(screen.getByText('repairReports.statusFailed')).toBeInTheDocument()
   })
 
+  it('renders the cover-analysis column from the real LLM build state', () => {
+    mockList([
+      report({ id: 'repair_report:a', llm_status: 'not_started' }),
+      report({ id: 'repair_report:b', filename: 'b.xlsx', llm_status: 'running' }),
+      report({ id: 'repair_report:c', filename: 'c.xlsx', llm_status: 'completed' }),
+    ])
+    const { container } = render(<RepairReportsScreen />)
+    // Dedicated header with the exact required label key.
+    expect(screen.getByText('repairReports.llmStatusColumn')).toBeInTheDocument()
+    // Values come from the backend LLM state, mapped through llmKnowledge keys.
+    expect(screen.getByText('llmKnowledge.statusNotStarted')).toBeInTheDocument()
+    expect(screen.getByText('llmKnowledge.statusRunning')).toBeInTheDocument()
+    expect(screen.getByText('llmKnowledge.statusCompleted')).toBeInTheDocument()
+    // Same table typography as the existing analysis-status cells.
+    const badges = container.querySelectorAll('td.h-12.px-4 > .font-mono.text-\\[11px\\]')
+    expect(badges.length).toBeGreaterThanOrEqual(6)
+  })
+
   it('shows the error state with retry', () => {
     mockList(undefined, { isError: true })
     render(<RepairReportsScreen />)

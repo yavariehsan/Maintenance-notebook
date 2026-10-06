@@ -1392,6 +1392,26 @@ async def find_active_build_for_reports(
     return None
 
 
+async def find_latest_build_covering_report(
+    report_id: str,
+) -> Optional[Dict[str, Any]]:
+    """Latest build (any status) covering one report, newest first.
+
+    Used to surface per-report language-model analysis status: the newest
+    build whose ``source_report_ids`` contain the report determines what
+    the repair table shows. Returns None when no build covers the report.
+    """
+    rows = await repo_query(
+        f"SELECT * FROM {TABLE_BUILD} ORDER BY created DESC",
+    )
+    wanted = str(report_id)
+    for build in rows or []:
+        build_reports = [str(item) for item in build.get("source_report_ids") or []]
+        if wanted in build_reports:
+            return _build_row(build)
+    return None
+
+
 async def find_latest_finished_build_for_reports(
     report_ids: List[str],
 ) -> Optional[Dict[str, Any]]:
