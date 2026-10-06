@@ -531,6 +531,7 @@ async def migrate_credential_encryption(request: MigrateEncryptionRequest):
         return await svc_migrate_encryption(
             dry_run=request.dry_run,
             require_backup_confirm=request.require_backup_confirm,
+            target_key_id=request.target_key_id,
         )
     except ValueError as e:
         raise _handle_value_error(e)

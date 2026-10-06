@@ -135,8 +135,8 @@ def encrypt_value(value: str) -> str:
     """
     Encrypt a string value using the current versioned scheme (PBKDF2).
 
-    New writes always use the ``pbkdf2v1:`` envelope. Legacy reads keep
-    working through :func:`decrypt_value`.
+    New writes always use the ``pbkdf2v2:`` envelope carrying the active
+    key id. Legacy reads keep working through :func:`decrypt_value`.
 
     Args:
         value: The plain text string to encrypt.
@@ -147,7 +147,9 @@ def encrypt_value(value: str) -> str:
     Raises:
         ValueError: If encryption is not configured.
     """
-    return encrypt_pbkdf2_value(value, _get_encryption_key())
+    keys = get_configured_keys()
+    active_id = next(iter(keys))
+    return encrypt_pbkdf2v2_value(value, keys[active_id], active_id)
 
 
 def looks_like_fernet_token(s: str) -> bool:
@@ -178,13 +180,15 @@ def decrypt_value(value: str) -> str:
 
     Dispatch order (never guessed):
 
-    1. Exact ``pbkdf2v1:`` prefix -> PBKDF2 path only. Failures raise,
-       never fall through to legacy or plaintext handling.
-    2. Any other ``<name>v<digits>:``-shaped prefix -> unsupported
+    1. Exact ``pbkdf2v2:`` prefix -> PBKDF2 path with exact key-id lookup.
+       Unknown ids and wrong secrets raise; other keys are never tried.
+    2. Exact ``pbkdf2v1:`` prefix -> PBKDF2 path over configured keys in
+       deterministic order (v1 carries no identity; active first).
+    3. Any other ``<name>v<digits>:``-shaped prefix -> unsupported
        version, controlled failure (prevents downgrade/confusion).
-    3. Otherwise the legacy rules apply unchanged: Fernet/SHA-256
-       decryption, with plaintext passthrough for values that are not
-       Fernet tokens at all.
+    4. Otherwise the legacy rules apply unchanged: Fernet/SHA-256
+       decryption tried over configured keys in order, with plaintext
+       passthrough for values that are not Fernet tokens at all.
 
     Args:
         value: The encrypted string (or plain text for legacy data).
@@ -197,29 +201,16 @@ def decrypt_value(value: str) -> str:
             for versioned/encrypted data (e.g. wrong key), or if the
             version is unknown.
     """
+    if is_pbkdf2v2_token(value):
+        return decrypt_pbkdf2v2_value(value, get_configured_keys())
     if is_pbkdf2_token(value):
-        return decrypt_pbkdf2_value(value, _get_encryption_key())
+        return _decrypt_v1_with_keys(value, get_configured_keys())
     if _VERSIONED_PREFIX_RE.match(value or ""):
         raise ValueError(
             "Unsupported credential encryption version. The credential "
             "was written by a newer version and cannot be decrypted here."
         )
-    fernet = get_fernet()
-
-    try:
-        return fernet.decrypt(value.encode()).decode()
-    except InvalidToken:
-        if looks_like_fernet_token(value):
-            # Looks like encrypted data but failed to decrypt - likely wrong key
-            raise ValueError(
-                "Decryption failed: data appears to be encrypted but key is incorrect. "
-                "Check OPEN_NOTEBOOK_ENCRYPTION_KEY configuration."
-            )
-        # Not a valid token - treat as legacy plaintext
-        return value
-    except Exception as e:
-        logger.error(f"Decryption failed: {e}")
-        raise ValueError(f"Decryption failed: {str(e)}")
+    return _decrypt_legacy_with_keys(value, get_configured_keys())
 
 
 # --- Versioned PBKDF2 envelope (fork-native `pbkdf2v1:` format) -------------
@@ -246,6 +237,16 @@ PBKDF2_PREFIX = "pbkdf2v1:"
 PBKDF2_ITERATIONS = 600_000
 PBKDF2_SALT_BYTES = 16
 PBKDF2_HASH_NAME = "sha256"
+
+# Fork-native multi-key envelope: same construction as v1 plus an explicit
+# key identifier so reads never guess among configured keys:
+#     pbkdf2v2:<key_id>:<iterations>:<salt_b64>:<fernet_token>
+PBKDF2V2_VERSION = "pbkdf2v2"
+PBKDF2V2_PREFIX = "pbkdf2v2:"
+
+ACTIVE_KEY_ID_ENV = "OPEN_NOTEBOOK_ENCRYPTION_KEY_ID"
+PREVIOUS_KEYS_ENV = "OPEN_NOTEBOOK_ENCRYPTION_PREVIOUS_KEYS"
+DEFAULT_ACTIVE_KEY_ID = "default"
 
 _VERSIONED_PREFIX_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*v[0-9]+:")
 
@@ -280,30 +281,216 @@ def is_pbkdf2_token(value: object) -> bool:
     return isinstance(value, str) and value.startswith(PBKDF2_PREFIX)
 
 
-def decrypt_pbkdf2_value(token: str, master_secret: str) -> str:
-    """Decrypt a ``pbkdf2v1:`` envelope. Any defect raises ValueError."""
+def is_pbkdf2v2_token(value: object) -> bool:
+    """Exact-prefix check for the ``pbkdf2v2:`` envelope."""
+    return isinstance(value, str) and value.startswith(PBKDF2V2_PREFIX)
+
+
+def get_active_key_id() -> str:
+    """Configured active key id (``OPEN_NOTEBOOK_ENCRYPTION_KEY_ID``).
+
+    Blank/unset means the ``"default"`` single-key deployment. Colons are
+    rejected: they collide with the envelope delimiter.
+    """
+    raw = get_secret_from_env(ACTIVE_KEY_ID_ENV)
+    key_id = (raw or "").strip() or DEFAULT_ACTIVE_KEY_ID
+    if ":" in key_id:
+        raise ValueError(
+            "Invalid encryption key id: identifiers must not contain ':'."
+        )
+    return key_id
+
+
+def get_configured_keys() -> "dict[str, str]":
+    """All configured master secrets, active first, in deterministic order.
+
+    Active secret comes from ``OPEN_NOTEBOOK_ENCRYPTION_KEY``; previous
+    secrets from ``OPEN_NOTEBOOK_ENCRYPTION_PREVIOUS_KEYS`` as a JSON
+    object mapping key id to secret. Duplicate ids (including a clash
+    with the active id) and malformed values raise ValueError. Secret
+    values never appear in error messages.
+    """
+    import json
+
+    active_secret = get_secret_from_env("OPEN_NOTEBOOK_ENCRYPTION_KEY")
+    if not active_secret:
+        raise ValueError(
+            "Encryption key not configured. "
+            "Set OPEN_NOTEBOOK_ENCRYPTION_KEY to enable encrypted storage."
+        )
+    active_id = get_active_key_id()
+    keys: "dict[str, str]" = {active_id: active_secret}
+    raw_previous = get_secret_from_env(PREVIOUS_KEYS_ENV)
+    if raw_previous:
+        try:
+            parsed = json.loads(raw_previous)
+        except Exception:
+            raise ValueError(
+                f"{PREVIOUS_KEYS_ENV} must be a JSON object mapping "
+                "key id to secret."
+            )
+        if not isinstance(parsed, dict):
+            raise ValueError(
+                f"{PREVIOUS_KEYS_ENV} must be a JSON object mapping "
+                "key id to secret."
+            )
+        for key_id, secret in parsed.items():
+            clean_id = str(key_id).strip()
+            if not clean_id or ":" in clean_id or not secret:
+                raise ValueError(
+                    "Invalid previous-key entry: ids must be non-blank "
+                    "without ':' and secrets non-empty."
+                )
+            if clean_id in keys:
+                raise ValueError(
+                    f"Duplicate encryption key id: '{clean_id}' is already "
+                    "configured."
+                )
+            keys[clean_id] = secret
+    return keys
+
+
+def _parse_envelope_fields(
+    token: str, version: str, expected_fields: int
+) -> "list[str]":
+    """Split and validate a versioned envelope's shape (never decrypts)."""
+    parts = token.split(":")
+    if len(parts) != expected_fields or parts[0] != version:
+        raise ValueError("Malformed versioned credential envelope.")
+    return parts
+
+
+def _parse_iterations(raw: str) -> int:
     try:
-        parts = token.split(":")
-        if len(parts) != 4 or parts[0] != PBKDF2_VERSION:
-            raise ValueError("Malformed versioned credential envelope.")
-        iterations = int(parts[1])
-        if iterations <= 0:
-            raise ValueError("Malformed versioned credential envelope.")
-        salt = base64.b64decode(parts[2])
-        if len(salt) < PBKDF2_SALT_BYTES:
-            raise ValueError("Malformed versioned credential envelope.")
+        iterations = int(raw)
+    except (TypeError, ValueError):
+        raise ValueError("Malformed versioned credential envelope.")
+    if iterations <= 0:
+        raise ValueError("Malformed versioned credential envelope.")
+    return iterations
+
+
+def _parse_salt(raw: str) -> bytes:
+    try:
+        salt = base64.b64decode(raw)
+    except Exception:
+        raise ValueError("Malformed versioned credential envelope.")
+    if len(salt) < PBKDF2_SALT_BYTES:
+        raise ValueError("Malformed versioned credential envelope.")
+    return salt
+
+
+def _decrypt_fernet_token(
+    fernet_token: str, master_secret: str, salt: bytes, iterations: int
+) -> str:
+    """Fernet-decrypt one envelope payload. Wrong keys raise ValueError."""
+    try:
         fernet = Fernet(
             _derive_pbkdf2_fernet_key(master_secret, salt, iterations)
         )
-        return fernet.decrypt(parts[3].encode("utf-8")).decode("utf-8")
+        return fernet.decrypt(fernet_token.encode("utf-8")).decode("utf-8")
     except InvalidToken as e:
         raise ValueError(
             "Decryption failed: versioned credential could not be "
             "decrypted. Check OPEN_NOTEBOOK_ENCRYPTION_KEY configuration."
         ) from e
+
+
+def decrypt_pbkdf2_value(token: str, master_secret: str) -> str:
+    """Decrypt a ``pbkdf2v1:`` envelope. Any defect raises ValueError."""
+    parts = _parse_envelope_fields(token, PBKDF2_VERSION, 4)
+    iterations = _parse_iterations(parts[1])
+    salt = _parse_salt(parts[2])
+    try:
+        return _decrypt_fernet_token(parts[3], master_secret, salt, iterations)
     except ValueError:
         raise
     except Exception as e:
         raise ValueError(
             f"Decryption failed for versioned credential: {str(e)}"
         ) from e
+
+
+def encrypt_pbkdf2v2_value(
+    value: str, master_secret: str, key_id: str
+) -> str:
+    """Encrypt under the ``pbkdf2v2:`` envelope with an explicit key id."""
+    if not key_id or ":" in key_id:
+        raise ValueError("Key id must be non-blank and contain no ':'.")
+    salt = secrets.token_bytes(PBKDF2_SALT_BYTES)
+    fernet = Fernet(
+        _derive_pbkdf2_fernet_key(master_secret, salt, PBKDF2_ITERATIONS)
+    )
+    token = fernet.encrypt(value.encode("utf-8")).decode("utf-8")
+    salt_b64 = base64.b64encode(salt).decode("ascii")
+    return f"{PBKDF2V2_PREFIX}{key_id}:{PBKDF2_ITERATIONS}:{salt_b64}:{token}"
+
+
+def decrypt_pbkdf2v2_value(
+    token: str, keys: "dict[str, str]"
+) -> str:
+    """Decrypt a ``pbkdf2v2:`` envelope via exact key-id lookup.
+
+    No fallback: an unknown key id or wrong secret raises ValueError, and
+    other configured keys are never attempted.
+    """
+    parts = _parse_envelope_fields(token, PBKDF2V2_VERSION, 5)
+    key_id = parts[1]
+    if not key_id or key_id not in keys:
+        raise ValueError(
+            f"Unknown encryption key id: '{key_id}'. Configure the "
+            "matching previous key to decrypt this credential."
+        )
+    iterations = _parse_iterations(parts[2])
+    salt = _parse_salt(parts[3])
+    try:
+        return _decrypt_fernet_token(parts[4], keys[key_id], salt, iterations)
+    except ValueError:
+        raise
+    except Exception as e:
+        raise ValueError(
+            f"Decryption failed for versioned credential: {str(e)}"
+        ) from e
+
+
+def _decrypt_v1_with_keys(token: str, keys: "dict[str, str]") -> str:
+    """Decrypt a ``pbkdf2v1:`` envelope against configured keys in order.
+
+    v1 carries no key identity, so candidates are attempted deterministically
+    (active first, then previous in configured order). Structural defects
+    fail immediately; only wrong-key results advance to the next candidate.
+    """
+    parts = _parse_envelope_fields(token, PBKDF2_VERSION, 4)
+    iterations = _parse_iterations(parts[1])
+    salt = _parse_salt(parts[2])
+    for candidate in keys.values():
+        try:
+            return _decrypt_fernet_token(parts[3], candidate, salt, iterations)
+        except ValueError:
+            continue
+    raise ValueError(
+        "Decryption failed: none of the configured keys decrypted "
+        "the pbkdf2v1 credential. Check OPEN_NOTEBOOK_ENCRYPTION_KEY "
+        "and previous-keys configuration."
+    )
+
+
+def _decrypt_legacy_with_keys(value: str, keys: "dict[str, str]") -> str:
+    """Legacy Fernet/SHA-256 decrypt across configured keys in order.
+
+    Non-Fernet-shaped input is key-independent: the historic plaintext
+    passthrough applies on first inspection. Fernet-shaped input that no
+    configured key opens raises wrong-key ValueError.
+    """
+    if not looks_like_fernet_token(value):
+        return value
+    for candidate in keys.values():
+        fernet = Fernet(_ensure_fernet_key(candidate).encode())
+        try:
+            return fernet.decrypt(value.encode()).decode()
+        except InvalidToken:
+            continue
+    raise ValueError(
+        "Decryption failed: data appears to be encrypted but key is "
+        "incorrect. Check OPEN_NOTEBOOK_ENCRYPTION_KEY configuration."
+    )

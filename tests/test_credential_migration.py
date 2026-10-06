@@ -73,13 +73,14 @@ class TestMigrateOperation:
         assert result["failed"] == 0
         assert mock_update.await_count == 1
         new_value = mock_update.await_args.args[2]["api_key"]
-        assert new_value.startswith("pbkdf2v1:")
-        assert enc.decrypt_pbkdf2_value(new_value, MASTER) == "sk-a"
+        assert new_value.startswith("pbkdf2v2:")
+        assert new_value.split(":")[1] == "default"
+        assert enc.decrypt_value(new_value) == "sk-a"
 
     async def test_already_new_skipped_byte_identical(self):
         from open_notebook.utils import encryption as enc
 
-        token = enc.encrypt_pbkdf2_value("sk-a", MASTER)
+        token = enc.encrypt_pbkdf2v2_value("sk-a", MASTER, "default")
         result, mock_update = await self._run([_row("credential:a", token)])
         assert result["skipped"] == 1
         assert result["migrated"] == 0
@@ -89,7 +90,7 @@ class TestMigrateOperation:
     async def test_idempotent_rerun_changes_nothing(self):
         from open_notebook.utils import encryption as enc
 
-        token = enc.encrypt_pbkdf2_value("sk-a", MASTER)
+        token = enc.encrypt_pbkdf2v2_value("sk-a", MASTER, "default")
         first, _ = await self._run([_row("credential:a", token)])
         second, mock_update = await self._run([_row("credential:a", token)])
         assert first["records"][0]["status"] == "skipped"
@@ -221,7 +222,7 @@ class TestMigrateEndpoint:
             router, "svc_migrate_encryption",
             new=AsyncMock(return_value=migrate_result or {
                 "total": 0, "migrated": 0, "skipped": 0, "failed": 0,
-                "dry_run": False, "records": [],
+                "dry_run": False, "target_key_id": "default", "records": [],
             }),
         ):
             return await router.migrate_credential_encryption(body)
@@ -265,8 +266,147 @@ class TestMigrateEndpoint:
         )
         result = await self._call(monkeypatch, body, {
             "total": 1, "migrated": 1, "skipped": 0, "failed": 0,
-            "dry_run": True,
+            "dry_run": True, "target_key_id": "default",
             "records": [{"id": "credential:a", "status": "migrated"}],
         })
         assert result["dry_run"] is True
         assert "sk-super-secret" not in repr(result)
+
+
+class TestRotationMigration:
+    pytestmark = pytest.mark.asyncio
+
+    @pytest.fixture(autouse=True)
+    def rotation_keys(self, monkeypatch):
+        import json
+
+        import open_notebook.utils.encryption as enc
+
+        monkeypatch.setenv("OPEN_NOTEBOOK_ENCRYPTION_KEY", "new-active")
+        monkeypatch.setenv("OPEN_NOTEBOOK_ENCRYPTION_KEY_ID", "2026q4")
+        monkeypatch.setenv(
+            "OPEN_NOTEBOOK_ENCRYPTION_PREVIOUS_KEYS",
+            json.dumps({"2024": "old-secret"}),
+        )
+        monkeypatch.delenv("OPEN_NOTEBOOK_PASSWORD_FILE", raising=False)
+        monkeypatch.setattr(enc, "_ENCRYPTION_KEY", None)
+
+    async def _run(self, rows, **kwargs):
+        from api import credentials_service as svc
+
+        params = {"dry_run": False, "require_backup_confirm": True}
+        params.update(kwargs)
+        with (
+            patch(
+                "open_notebook.database.repository.repo_query",
+                new=AsyncMock(return_value=[dict(r) for r in rows]),
+            ),
+            patch(
+                "open_notebook.database.repository.repo_update",
+                new=AsyncMock(return_value=[]),
+            ) as mock_update,
+        ):
+            result = await svc.migrate_credential_encryption(**params)
+        return result, mock_update
+
+    async def test_old_key_row_migrated_to_active(self):
+        from open_notebook.utils import encryption as enc
+
+        old_token = enc.encrypt_pbkdf2v2_value("sk-old", "old-secret", "2024")
+        result, mock_update = await self._run([_row("credential:a", old_token)])
+        assert result["migrated"] == 1
+        assert result["target_key_id"] == "2026q4"
+        new_value = mock_update.await_args.args[2]["api_key"]
+        assert new_value.split(":")[1] == "2026q4"
+        assert enc.decrypt_value(new_value) == "sk-old"
+
+    async def test_v1_row_migrated_to_active(self):
+        from open_notebook.utils import encryption as enc
+
+        v1_token = enc.encrypt_pbkdf2_value("sk-v1", "old-secret")
+        result, mock_update = await self._run([_row("credential:a", v1_token)])
+        assert result["migrated"] == 1
+        new_value = mock_update.await_args.args[2]["api_key"]
+        assert new_value.startswith("pbkdf2v2:2026q4:")
+
+    async def test_on_target_skipped_byte_identical(self):
+        from open_notebook.utils import encryption as enc
+
+        token = enc.encrypt_pbkdf2v2_value("sk-a", "new-active", "2026q4")
+        result, mock_update = await self._run([_row("credential:a", token)])
+        assert result["skipped"] == 1
+        mock_update.assert_not_awaited()
+
+    async def test_explicit_other_configured_target(self):
+        from open_notebook.utils import encryption as enc
+
+        token = enc.encrypt_pbkdf2v2_value("sk-a", "new-active", "2026q4")
+        result, mock_update = await self._run(
+            [_row("credential:a", token)], target_key_id="2024"
+        )
+        assert result["migrated"] == 1
+        assert result["target_key_id"] == "2024"
+        new_value = mock_update.await_args.args[2]["api_key"]
+        assert new_value.split(":")[1] == "2024"
+
+    async def test_unknown_target_rejected(self):
+        from api import credentials_service as svc
+
+        with pytest.raises(ValueError, match="[Uu]nknown target"):
+            await svc.migrate_credential_encryption(
+                dry_run=False, require_backup_confirm=True,
+                target_key_id="nope",
+            )
+
+    async def test_retired_key_row_failed_and_preserved(self):
+        from open_notebook.utils import encryption as enc
+
+        token = enc.encrypt_pbkdf2v2_value("sk-x", "gone-secret", "gone")
+        result, mock_update = await self._run([_row("credential:a", token)])
+        assert result["failed"] == 1
+        mock_update.assert_not_awaited()
+        assert result["records"][0]["status"] == "failed"
+
+    async def test_mixed_rotation_run(self):
+        from open_notebook.utils import encryption as enc
+
+        rows = [
+            _row("credential:1",
+                 enc.encrypt_pbkdf2v2_value("sk-1", "old-secret", "2024")),
+            _row("credential:2",
+                 enc.encrypt_pbkdf2v2_value("sk-2", "new-active", "2026q4")),
+            _row("credential:3", _legacy_token("sk-3", "old-secret")),
+        ]
+        result, mock_update = await self._run(rows)
+        assert result["migrated"] == 2
+        assert result["skipped"] == 1
+        assert result["failed"] == 0
+        assert mock_update.await_count == 2
+
+    async def test_rotation_dry_run_writes_nothing(self):
+        from open_notebook.utils import encryption as enc
+
+        rows = [_row("credential:1",
+                     enc.encrypt_pbkdf2v2_value("sk-1", "old-secret", "2024"))]
+        result, mock_update = await self._run(
+            rows, dry_run=True, require_backup_confirm=False
+        )
+        assert result["dry_run"] is True
+        assert result["migrated"] == 1
+        mock_update.assert_not_awaited()
+
+    async def test_endpoint_rejects_unknown_target(self, monkeypatch):
+        from fastapi import HTTPException
+
+        from api.models import MigrateEncryptionRequest
+        from api.routers import credentials as router
+
+        monkeypatch.setenv("OPEN_NOTEBOOK_PASSWORD", "pw")
+        with pytest.raises(HTTPException) as exc_info:
+            await router.migrate_credential_encryption(
+                MigrateEncryptionRequest(
+                    dry_run=False, require_backup_confirm=True,
+                    target_key_id="nope",
+                )
+            )
+        assert exc_info.value.status_code == 400

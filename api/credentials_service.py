@@ -952,7 +952,10 @@ async def migrate_from_env() -> dict:
 
 
 async def migrate_credential_encryption(
-    *, dry_run: bool = False, require_backup_confirm: bool = True
+    *,
+    dry_run: bool = False,
+    require_backup_confirm: bool = True,
+    target_key_id: "str | None" = None,
 ) -> Dict[str, Any]:
     """Migrate stored credentials from legacy to the ``pbkdf2v1`` envelope.
 
@@ -966,6 +969,13 @@ async def migrate_credential_encryption(
     exists — the application performs no backup itself. A real migration
     (``dry_run=False``) refuses to run without it.
 
+    ``target_key_id`` selects which configured key migrated records are
+    re-encrypted under (default: the active key). Records already on the
+    target are verified and skipped byte-identically, so rotation runs as:
+    configure new active key (old stays readable) -> migrate to target ->
+    verify zero remaining old-key records -> retire the old key
+    operationally. Unknown targets are rejected before any record work.
+
     Scope note: only the primary ``credential`` table is migrated. The
     legacy ``ProviderConfig`` surface (nested credentials inside the
     ``open_notebook`` singleton) is deliberately excluded: it is drained
@@ -977,8 +987,11 @@ async def migrate_credential_encryption(
     from open_notebook.database.repository import repo_query, repo_update
     from open_notebook.utils.encryption import (
         decrypt_value,
-        encrypt_pbkdf2_value,
+        encrypt_pbkdf2v2_value,
+        get_active_key_id,
+        get_configured_keys,
         is_pbkdf2_token,
+        is_pbkdf2v2_token,
     )
 
     if not dry_run and not require_backup_confirm:
@@ -987,12 +1000,14 @@ async def migrate_credential_encryption(
             "backup confirmation: re-run with require_backup_confirm=true "
             "after taking a database backup."
         )
-    master_secret = get_secret_from_env("OPEN_NOTEBOOK_ENCRYPTION_KEY")
-    if not master_secret:
+    keys = get_configured_keys()
+    target = ((target_key_id or "").strip() or get_active_key_id())
+    if target not in keys:
         raise ValueError(
-            "Encryption key not configured. "
-            "Set OPEN_NOTEBOOK_ENCRYPTION_KEY to migrate credentials."
+            f"Unknown target encryption key id: '{target}'. Configure it "
+            "as the active key or not at all."
         )
+    target_secret = keys[target]
 
     rows = await repo_query("SELECT id, api_key FROM credential")
     records: List[Dict[str, Any]] = []
@@ -1006,7 +1021,9 @@ async def migrate_credential_encryption(
             records.append({"id": record_id, "status": "skipped"})
             skipped += 1
             continue
-        if is_pbkdf2_token(raw):
+        if is_pbkdf2v2_token(raw) and raw.split(":")[1] == target:
+            # Already on the target key: verify readability, never
+            # re-encrypt (reruns stay byte-stable).
             try:
                 decrypt_value(raw)
             except Exception as e:
@@ -1026,13 +1043,15 @@ async def migrate_credential_encryption(
         try:
             plaintext = decrypt_value(raw)
         except Exception as e:
+            versioned = is_pbkdf2v2_token(raw) or is_pbkdf2_token(raw)
             logger.warning(
-                f"Credential {record_id} kept: legacy value undecryptable "
+                f"Credential {record_id} kept: value undecryptable "
                 f"({type(e).__name__})"
             )
             records.append(
                 {"id": record_id, "status": "failed",
-                 "error": "decrypt_failed"}
+                 "error": "new_format_undecryptable" if versioned
+                 else "decrypt_failed"}
             )
             failed += 1
             continue
@@ -1041,7 +1060,9 @@ async def migrate_credential_encryption(
             migrated += 1
             continue
         try:
-            new_value = encrypt_pbkdf2_value(plaintext, master_secret)
+            new_value = encrypt_pbkdf2v2_value(
+                plaintext, target_secret, target
+            )
             await repo_update("credential", record_id, {"api_key": new_value})
         except Exception as e:
             logger.warning(
@@ -1064,5 +1085,6 @@ async def migrate_credential_encryption(
         "skipped": skipped,
         "failed": failed,
         "dry_run": dry_run,
+        "target_key_id": target,
         "records": records,
     }

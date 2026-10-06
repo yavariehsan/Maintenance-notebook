@@ -103,7 +103,10 @@ class TestPbkdf2Structure:
 
 class TestDispatch:
     def test_encrypt_value_emits_new_format(self, master_key):
-        assert encrypt_value("sk-1").startswith("pbkdf2v1:")
+        token = encrypt_value("sk-1")
+        assert token.startswith("pbkdf2v2:")
+        assert token.split(":")[1] == "default"
+        assert decrypt_value(token) == "sk-1"
 
     def test_decrypt_value_reads_new_format(self, master_key):
         token = enc.encrypt_pbkdf2_value("sk-1", master_key)
@@ -139,7 +142,8 @@ class TestCredentialModelIntegration:
             name="T", provider="openai", api_key=SecretStr("sk-abc")
         )
         data = cred._prepare_save_data()
-        assert data["api_key"].startswith("pbkdf2v1:")
+        assert data["api_key"].startswith("pbkdf2v2:")
+        assert data["api_key"].split(":")[1] == "default"
 
     def test_from_db_row_reads_both_formats(self, master_key):
         from open_notebook.domain.credential import Credential
@@ -177,4 +181,6 @@ class TestProviderConfigIntegration:
             provider="openai",
             api_key=SecretStr("sk-abc"),
         )
-        assert cred.to_dict(encrypted=True)["api_key"].startswith("pbkdf2v1:")
+        token = cred.to_dict(encrypted=True)["api_key"]
+        assert token.startswith("pbkdf2v2:")
+        assert token.split(":")[1] == "default"

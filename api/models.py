@@ -956,6 +956,7 @@ class MigrateEncryptionRequest(BaseModel):
 
     dry_run: bool = False
     require_backup_confirm: bool = False
+    target_key_id: Optional[str] = None
 
 
 class MigrationRecordResult(BaseModel):
@@ -974,6 +975,7 @@ class MigrateEncryptionResponse(BaseModel):
     skipped: int
     failed: int
     dry_run: bool
+    target_key_id: str
     records: List[MigrationRecordResult]
 
 
