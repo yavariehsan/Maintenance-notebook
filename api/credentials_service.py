@@ -8,7 +8,7 @@ All functions raise ValueError for business errors (router converts to HTTPExcep
 """
 
 import os
-from typing import Dict, List
+from typing import Any, Dict, List
 
 import httpx
 from loguru import logger
@@ -948,4 +948,121 @@ async def migrate_from_env() -> dict:
         "skipped": skipped,
         "not_configured": not_configured,
         "errors": errors,
+    }
+
+
+async def migrate_credential_encryption(
+    *, dry_run: bool = False, require_backup_confirm: bool = True
+) -> Dict[str, Any]:
+    """Migrate stored credentials from legacy to the ``pbkdf2v1`` envelope.
+
+    Per-record and convergent: already-new records are verified and skipped
+    (never re-encrypted, so reruns are byte-stable); failures preserve the
+    original ciphertext and are reported, never aborting the batch. A
+    dry run inspects only and performs zero writes. Database-wide errors
+    propagate (they are infrastructure failures, not per-record results).
+
+    ``require_backup_confirm`` is an operator attestation that a backup
+    exists — the application performs no backup itself. A real migration
+    (``dry_run=False``) refuses to run without it.
+
+    Scope note: only the primary ``credential`` table is migrated. The
+    legacy ``ProviderConfig`` surface (nested credentials inside the
+    ``open_notebook`` singleton) is deliberately excluded: it is drained
+    by the pre-existing ``migrate_from_provider_config`` flow, shares the
+    same ``decrypt_value`` dispatch (so its legacy values stay readable),
+    and any of its values re-saved through ``to_dict(encrypted=True)``
+    automatically use the new envelope.
+    """
+    from open_notebook.database.repository import repo_query, repo_update
+    from open_notebook.utils.encryption import (
+        decrypt_value,
+        encrypt_pbkdf2_value,
+        is_pbkdf2_token,
+    )
+
+    if not dry_run and not require_backup_confirm:
+        raise ValueError(
+            "Refusing credential encryption migration without explicit "
+            "backup confirmation: re-run with require_backup_confirm=true "
+            "after taking a database backup."
+        )
+    master_secret = get_secret_from_env("OPEN_NOTEBOOK_ENCRYPTION_KEY")
+    if not master_secret:
+        raise ValueError(
+            "Encryption key not configured. "
+            "Set OPEN_NOTEBOOK_ENCRYPTION_KEY to migrate credentials."
+        )
+
+    rows = await repo_query("SELECT id, api_key FROM credential")
+    records: List[Dict[str, Any]] = []
+    migrated = 0
+    skipped = 0
+    failed = 0
+    for row in rows or []:
+        record_id = str(row.get("id"))
+        raw = row.get("api_key")
+        if not raw or not isinstance(raw, str):
+            records.append({"id": record_id, "status": "skipped"})
+            skipped += 1
+            continue
+        if is_pbkdf2_token(raw):
+            try:
+                decrypt_value(raw)
+            except Exception as e:
+                logger.warning(
+                    f"Credential {record_id} kept: new-format value "
+                    f"undecryptable ({type(e).__name__})"
+                )
+                records.append(
+                    {"id": record_id, "status": "failed",
+                     "error": "new_format_undecryptable"}
+                )
+                failed += 1
+                continue
+            records.append({"id": record_id, "status": "skipped"})
+            skipped += 1
+            continue
+        try:
+            plaintext = decrypt_value(raw)
+        except Exception as e:
+            logger.warning(
+                f"Credential {record_id} kept: legacy value undecryptable "
+                f"({type(e).__name__})"
+            )
+            records.append(
+                {"id": record_id, "status": "failed",
+                 "error": "decrypt_failed"}
+            )
+            failed += 1
+            continue
+        if dry_run:
+            records.append({"id": record_id, "status": "migrated"})
+            migrated += 1
+            continue
+        try:
+            new_value = encrypt_pbkdf2_value(plaintext, master_secret)
+            await repo_update("credential", record_id, {"api_key": new_value})
+        except Exception as e:
+            logger.warning(
+                f"Credential {record_id} kept: replacement write failed "
+                f"({type(e).__name__})"
+            )
+            records.append(
+                {"id": record_id, "status": "failed",
+                 "error": "write_failed"}
+            )
+            failed += 1
+            continue
+        records.append({"id": record_id, "status": "migrated"})
+        migrated += 1
+        logger.info(f"Credential {record_id} migrated to pbkdf2v1.")
+
+    return {
+        "total": len(records),
+        "migrated": migrated,
+        "skipped": skipped,
+        "failed": failed,
+        "dry_run": dry_run,
+        "records": records,
     }

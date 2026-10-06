@@ -118,6 +118,61 @@ class EquipmentImportResponse(BaseModel):
     )
 
 
+# Failure-mode models (failure-mode database, migration 32). Dedicated
+# `failure_mode` table, separate from the equipment `asset` table.
+class FailureModeCreate(BaseModel):
+    code: str = Field(..., description="Equipment code this mode belongs to")
+    label: str = Field(..., description="Failure-mode name")
+    description: str = Field(default="", description="Description of the mode")
+    status: Optional[str] = Field(default="active", description="Operational status")
+
+
+class FailureModeUpdate(BaseModel):
+    code: Optional[str] = Field(None, description="Equipment code this mode belongs to")
+    label: Optional[str] = Field(None, description="Failure-mode name")
+    description: Optional[str] = Field(None, description="Description of the mode")
+    status: Optional[str] = Field(None, description="Operational status")
+
+
+class FailureModeResponse(BaseModel):
+    id: str
+    code: str
+    label: str
+    description: str
+    status: str
+    created: str
+    updated: str
+
+
+class FailureModeDeleteResponse(BaseModel):
+    message: str
+
+
+class FailureModeImportIssueModel(BaseModel):
+    row_number: int = Field(..., description="1-based Excel row number")
+    code: Optional[str] = Field(None, description="Equipment code of the row")
+    message: str = Field(..., description="Why the row was rejected")
+
+
+class FailureModeImportRowModel(BaseModel):
+    row_number: int = Field(..., description="1-based Excel row number")
+    code: str = Field(..., description="Equipment code of the row")
+    label: str = Field(..., description="Failure-mode name of the row")
+
+
+class FailureModeImportResponse(BaseModel):
+    total_rows: int = Field(..., description="Non-blank data rows detected")
+    valid_rows: List[FailureModeImportRowModel] = Field(
+        ..., description="Rows accepted by validation"
+    )
+    issues: List[FailureModeImportIssueModel] = Field(
+        ..., description="Rows rejected, with reasons"
+    )
+    imported_count: int = Field(
+        0, description="Rows persisted (0 for a dry-run preview)"
+    )
+
+
 class MaintenanceSourceRef(BaseModel):
     id: str
     title: Optional[str] = None
@@ -894,6 +949,32 @@ class CredentialDeleteResponse(BaseModel):
 
     message: str
     deleted_models: int = 0
+
+
+class MigrateEncryptionRequest(BaseModel):
+    """Request for credential encryption migration (legacy -> pbkdf2v1)."""
+
+    dry_run: bool = False
+    require_backup_confirm: bool = False
+
+
+class MigrationRecordResult(BaseModel):
+    """Per-record migration outcome (operational metadata only, no secrets)."""
+
+    id: str
+    status: str
+    error: Optional[str] = None
+
+
+class MigrateEncryptionResponse(BaseModel):
+    """Summary of a credential encryption migration run."""
+
+    total: int
+    migrated: int
+    skipped: int
+    failed: int
+    dry_run: bool
+    records: List[MigrationRecordResult]
 
 
 class DiscoveredModelResponse(BaseModel):

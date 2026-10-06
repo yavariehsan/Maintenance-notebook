@@ -19,6 +19,8 @@ Usage:
 import base64
 import hashlib
 import os
+import re
+import secrets
 from pathlib import Path
 from typing import Optional
 
@@ -131,19 +133,21 @@ def get_fernet() -> Fernet:
 
 def encrypt_value(value: str) -> str:
     """
-    Encrypt a string value using Fernet symmetric encryption.
+    Encrypt a string value using the current versioned scheme (PBKDF2).
+
+    New writes always use the ``pbkdf2v1:`` envelope. Legacy reads keep
+    working through :func:`decrypt_value`.
 
     Args:
         value: The plain text string to encrypt.
 
     Returns:
-        Base64-encoded encrypted string.
+        Versioned encrypted string.
 
     Raises:
         ValueError: If encryption is not configured.
     """
-    fernet = get_fernet()
-    return fernet.encrypt(value.encode()).decode()
+    return encrypt_pbkdf2_value(value, _get_encryption_key())
 
 
 def looks_like_fernet_token(s: str) -> bool:
@@ -170,9 +174,17 @@ def looks_like_fernet_token(s: str) -> bool:
 
 def decrypt_value(value: str) -> str:
     """
-    Decrypt a Fernet-encrypted string value.
+    Decrypt a credential string value with strict version dispatch.
 
-    Handles graceful fallback for legacy unencrypted data.
+    Dispatch order (never guessed):
+
+    1. Exact ``pbkdf2v1:`` prefix -> PBKDF2 path only. Failures raise,
+       never fall through to legacy or plaintext handling.
+    2. Any other ``<name>v<digits>:``-shaped prefix -> unsupported
+       version, controlled failure (prevents downgrade/confusion).
+    3. Otherwise the legacy rules apply unchanged: Fernet/SHA-256
+       decryption, with plaintext passthrough for values that are not
+       Fernet tokens at all.
 
     Args:
         value: The encrypted string (or plain text for legacy data).
@@ -181,9 +193,17 @@ def decrypt_value(value: str) -> str:
         Decrypted plain text string, or original value if not encrypted.
 
     Raises:
-        ValueError: If encryption is not configured or if decryption fails
-            for what appears to be encrypted data (wrong key).
+        ValueError: If encryption is not configured, if decryption fails
+            for versioned/encrypted data (e.g. wrong key), or if the
+            version is unknown.
     """
+    if is_pbkdf2_token(value):
+        return decrypt_pbkdf2_value(value, _get_encryption_key())
+    if _VERSIONED_PREFIX_RE.match(value or ""):
+        raise ValueError(
+            "Unsupported credential encryption version. The credential "
+            "was written by a newer version and cannot be decrypted here."
+        )
     fernet = get_fernet()
 
     try:
@@ -200,3 +220,90 @@ def decrypt_value(value: str) -> str:
     except Exception as e:
         logger.error(f"Decryption failed: {e}")
         raise ValueError(f"Decryption failed: {str(e)}")
+
+
+# --- Versioned PBKDF2 envelope (fork-native `pbkdf2v1:` format) -------------
+#
+# Layout (all ASCII, colon-separated, exactly four fields):
+#
+#     pbkdf2v1:<iterations>:<salt_b64>:<fernet_token>
+#
+# - ``pbkdf2v1``: format version. Dispatch is by exact prefix match.
+# - ``iterations``: PBKDF2 iteration count, embedded so future runs may raise
+#   it under review without breaking readers.
+# - ``salt_b64``: standard-base64, cryptographically random per record
+#   (``PBKDF2_SALT_BYTES``).
+# - ``fernet_token``: standard Fernet token (AES-128-CBC + HMAC-SHA256)
+#   whose key is ``base64url(PBKDF2-HMAC-SHA256(master_utf8, salt,
+#   iterations, dklen=32))``. Authenticated encryption is preserved; PBKDF2
+#   supplies the password-based work factor the legacy SHA-256 step lacks.
+#
+# Unknown ``<name>v<digits>:`` prefixes fail closed (never legacy, never
+# plaintext) to prevent downgrade/confusion.
+
+PBKDF2_VERSION = "pbkdf2v1"
+PBKDF2_PREFIX = "pbkdf2v1:"
+PBKDF2_ITERATIONS = 600_000
+PBKDF2_SALT_BYTES = 16
+PBKDF2_HASH_NAME = "sha256"
+
+_VERSIONED_PREFIX_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*v[0-9]+:")
+
+
+def _derive_pbkdf2_fernet_key(
+    master_secret: str, salt: bytes, iterations: int
+) -> bytes:
+    """Derive a Fernet-ready key via PBKDF2-HMAC-SHA256 (UTF-8 master)."""
+    raw = hashlib.pbkdf2_hmac(
+        PBKDF2_HASH_NAME,
+        master_secret.encode("utf-8"),
+        salt,
+        iterations,
+        dklen=32,
+    )
+    return base64.urlsafe_b64encode(raw)
+
+
+def encrypt_pbkdf2_value(value: str, master_secret: str) -> str:
+    """Encrypt with a fresh random salt under the ``pbkdf2v1:`` envelope."""
+    salt = secrets.token_bytes(PBKDF2_SALT_BYTES)
+    fernet = Fernet(
+        _derive_pbkdf2_fernet_key(master_secret, salt, PBKDF2_ITERATIONS)
+    )
+    token = fernet.encrypt(value.encode("utf-8")).decode("utf-8")
+    salt_b64 = base64.b64encode(salt).decode("ascii")
+    return f"{PBKDF2_PREFIX}{PBKDF2_ITERATIONS}:{salt_b64}:{token}"
+
+
+def is_pbkdf2_token(value: object) -> bool:
+    """Exact-prefix check for the ``pbkdf2v1:`` envelope."""
+    return isinstance(value, str) and value.startswith(PBKDF2_PREFIX)
+
+
+def decrypt_pbkdf2_value(token: str, master_secret: str) -> str:
+    """Decrypt a ``pbkdf2v1:`` envelope. Any defect raises ValueError."""
+    try:
+        parts = token.split(":")
+        if len(parts) != 4 or parts[0] != PBKDF2_VERSION:
+            raise ValueError("Malformed versioned credential envelope.")
+        iterations = int(parts[1])
+        if iterations <= 0:
+            raise ValueError("Malformed versioned credential envelope.")
+        salt = base64.b64decode(parts[2])
+        if len(salt) < PBKDF2_SALT_BYTES:
+            raise ValueError("Malformed versioned credential envelope.")
+        fernet = Fernet(
+            _derive_pbkdf2_fernet_key(master_secret, salt, iterations)
+        )
+        return fernet.decrypt(parts[3].encode("utf-8")).decode("utf-8")
+    except InvalidToken as e:
+        raise ValueError(
+            "Decryption failed: versioned credential could not be "
+            "decrypted. Check OPEN_NOTEBOOK_ENCRYPTION_KEY configuration."
+        ) from e
+    except ValueError:
+        raise
+    except Exception as e:
+        raise ValueError(
+            f"Decryption failed for versioned credential: {str(e)}"
+        ) from e

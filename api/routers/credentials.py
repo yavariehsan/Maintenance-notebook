@@ -14,6 +14,7 @@ Endpoints:
 - POST /credentials/{credential_id}/test - Test connection
 - POST /credentials/{credential_id}/discover - Discover models
 - POST /credentials/{credential_id}/register-models - Register models
+- POST /credentials/migrate-encryption - Migrate stored credentials to pbkdf2v1
 
 NEVER returns actual API key values - only metadata.
 """
@@ -37,6 +38,9 @@ from api.credentials_service import (
     get_env_status as svc_get_env_status,
 )
 from api.credentials_service import (
+    migrate_credential_encryption as svc_migrate_encryption,
+)
+from api.credentials_service import (
     migrate_from_env as svc_migrate_from_env,
 )
 from api.credentials_service import (
@@ -51,6 +55,8 @@ from api.models import (
     CredentialResponse,
     DiscoveredModelResponse,
     DiscoverModelsResponse,
+    MigrateEncryptionRequest,
+    MigrateEncryptionResponse,
     RegisterModelsRequest,
     RegisterModelsResponse,
     UpdateCredentialRequest,
@@ -61,6 +67,7 @@ from open_notebook.exceptions import (
     NotFoundError,
     OpenNotebookError,
 )
+from open_notebook.utils.encryption import get_secret_from_env
 
 router = APIRouter(prefix="/credentials", tags=["credentials"])
 
@@ -498,3 +505,44 @@ async def migrate_from_env():
     except Exception as e:
         logger.error(f"Env migration FAILED: {type(e).__name__}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Migration from environment variables failed")
+
+
+@router.post("/migrate-encryption", response_model=MigrateEncryptionResponse)
+async def migrate_credential_encryption(request: MigrateEncryptionRequest):
+    """Migrate stored credentials from legacy to ``pbkdf2v1`` encryption.
+
+    Per-record and idempotent: already-migrated records are skipped,
+    failures preserve the original ciphertext. ``dry_run=true`` inspects
+    only and performs zero writes. A real migration requires
+    ``require_backup_confirm=true`` — an operator attestation that a
+    database backup exists (the application performs no backup itself).
+
+    Authorization boundary: possession of the API password. When API
+    password authentication is disabled, this privileged operation is
+    refused rather than run anonymously. Never returns secret material.
+    """
+    if get_secret_from_env("OPEN_NOTEBOOK_PASSWORD") is None:
+        raise HTTPException(
+            status_code=403,
+            detail="Refusing credential encryption migration: API password "
+            "authentication is disabled. Enable it to run this operation.",
+        )
+    try:
+        return await svc_migrate_encryption(
+            dry_run=request.dry_run,
+            require_backup_confirm=request.require_backup_confirm,
+        )
+    except ValueError as e:
+        raise _handle_value_error(e)
+    except HTTPException:
+        raise
+    except OpenNotebookError:
+        raise
+    except Exception as e:
+        logger.error(
+            f"Encryption migration FAILED: {type(e).__name__}: {e}",
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500, detail="Credential encryption migration failed"
+        )
