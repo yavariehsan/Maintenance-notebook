@@ -8,7 +8,11 @@ from surreal_commands import CommandInput, CommandOutput, command
 from open_notebook.database.repository import ensure_record_id
 from open_notebook.domain.notebook import Source
 from open_notebook.domain.transformation import Transformation
-from open_notebook.exceptions import ConfigurationError, ContextLengthExceededError
+from open_notebook.exceptions import (
+    ConfigurationError,
+    ContextLengthExceededError,
+    NotFoundError,
+)
 
 try:
     from open_notebook.graphs.source import source_graph
@@ -129,6 +133,12 @@ async def process_source_command(
             processing_time=processing_time,
         )
 
+    except NotFoundError as e:
+        # Genuinely deleted/missing records are permanent failures (P1.1):
+        # fail fast instead of burning the transient retry budget.
+        # Database outages surface as DatabaseOperationError (P0.5) and
+        # keep propagating below for retry.
+        raise ValueError(f"Source or transformation deleted or missing: {e}") from e
     except ValueError as e:
         # Validation errors are permanent failures. Re-raise so surreal-commands
         # marks the job as `failed` (stop_on=[ValueError] already prevents
@@ -240,6 +250,24 @@ async def run_transformation_command(
             processing_time=processing_time,
         )
 
+    except NotFoundError as e:
+        # Genuinely deleted/missing records are permanent failures (P1.1):
+        # report terminal failure instead of burning retries. (Raising
+        # ValueError here would bypass the handler below, so the terminal
+        # output is built directly.) Database outages surface as
+        # DatabaseOperationError (P0.5) and keep propagating for retry.
+        processing_time = time.time() - start_time
+        logger.error(
+            f"Failed to run transformation {input_data.transformation_id} "
+            f"on source {input_data.source_id}: deleted or missing: {e}"
+        )
+        return RunTransformationOutput(
+            success=False,
+            source_id=input_data.source_id,
+            transformation_id=input_data.transformation_id,
+            processing_time=processing_time,
+            error_message=f"Source or transformation deleted or missing: {e}",
+        )
     except ValueError as e:
         # Validation errors are permanent failures - don't retry
         processing_time = time.time() - start_time
