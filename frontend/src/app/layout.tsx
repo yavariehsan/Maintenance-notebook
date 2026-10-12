@@ -1,10 +1,10 @@
 import type { Metadata } from "next";
 import {
-  Bricolage_Grotesque,
   Instrument_Sans,
   Spline_Sans_Mono,
   Vazirmatn,
 } from "next/font/google";
+import localFont from "next/font/local";
 import "./globals.css";
 import "@/custom/theme/tokens.css";
 import "katex/dist/katex.min.css";
@@ -21,10 +21,17 @@ const instrumentSans = Instrument_Sans({
   variable: "--font-instrument-sans",
 });
 
-const bricolageGrotesque = Bricolage_Grotesque({
-  subsets: ["latin"],
-  weight: ["600", "700"],
+const bricolageGrotesque = localFont({
+  // Self-hosted: Turbopack dev cannot resolve next/font/google's
+  // parameterized /l/font?kit=&skey= URLs for this family (see fonts/OFL.txt
+  // for license). Same bytes Google serves for latin 600/700; variable name
+  // and weights unchanged so all existing CSS keeps working.
+  src: [
+    { path: "./fonts/bricolage-grotesque-latin.woff2", weight: "600" },
+    { path: "./fonts/bricolage-grotesque-latin.woff2", weight: "700" },
+  ],
   variable: "--font-bricolage",
+  display: "swap",
 });
 
 const splineSansMono = Spline_Sans_Mono({
