@@ -65,8 +65,10 @@ class TestDiscoveryAndGating:
 
     def test_credentials_overridable(self):
         text = _bat()
+        assert "SURREL_USER" not in text
         assert "SURREAL_USER" in text
-        assert "SURREAL_PASS" in text
+        assert "SURREAL_PASSWORD" in text
+        assert "SURREAL_PASS" not in text.replace("SURREAL_PASSWORD", "")
 
     def test_shutdown_uses_derived_paths(self):
         text = _bat()

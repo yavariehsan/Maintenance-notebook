@@ -36,11 +36,12 @@ REM   established external store in E:\Maintenance_Ai_Agent_Data).
 REM - SURREALDB_EXE: exact SurrealDB executable to use. When unset, the
 REM   launcher looks for surreal.exe on PATH, then falls back to the legacy
 REM   %USERPROFILE%\Tools\surrealdb-2.6.5 layout.
-REM - SURREAL_USER / SURREAL_PASS: SurrealDB credentials (default root/root
-REM   dev default). These must match SURREAL_USER/SURREAL_PASSWORD in .env.
+REM - SURREAL_USER / SURREAL_PASSWORD: SurrealDB credentials (default
+REM   root/root dev default). These must match SURREAL_USER/SURREAL_PASSWORD
+REM   in .env (same names, so one export works for both).
 REM SurrealDB credentials below must match SURREAL_USER/SURREAL_PASSWORD in
 REM .env (this deployment uses the root/root dev default). If you change the
-REM .env credentials, set SURREAL_USER/SURREAL_PASS to match.
+REM .env credentials, set SURREAL_USER/SURREAL_PASSWORD to match.
 REM
 REM Ports: SurrealDB 127.0.0.1:8000, API 127.0.0.1:5055, frontend
 REM 127.0.0.1:3000. If a port is already in use, close the owning process
@@ -55,7 +56,7 @@ set "ROOT=%~dp0"
 if not defined MAINTENANCE_DATA_ROOT set "MAINTENANCE_DATA_ROOT=E:\Maintenance_Ai_Agent_Data"
 set "DATA_ROOT=%MAINTENANCE_DATA_ROOT%"
 if not defined SURREAL_USER set "SURREAL_USER=root"
-if not defined SURREAL_PASS set "SURREAL_PASS=root"
+if not defined SURREAL_PASSWORD set "SURREAL_PASSWORD=root"
 
 REM --- external application-data root (API and worker read this at startup).
 REM .env is left untouched: it has a known BOM/parsing limitation under
@@ -189,7 +190,7 @@ echo ==========================================
 echo [1/4] Starting SurrealDB...
 echo ==========================================
 
-start "SurrealDB" "%SURREAL_EXE%" start --user "%SURREAL_USER%" --pass "%SURREAL_PASS%" --bind 127.0.0.1:8000 "rocksdb:%DATA_ROOT%\surrealdb"
+start "SurrealDB" "%SURREAL_EXE%" start --user "%SURREAL_USER%" --pass "%SURREAL_PASSWORD%" --bind 127.0.0.1:8000 "rocksdb:%DATA_ROOT%\surrealdb"
 
 echo Waiting for SurrealDB readiness (http://127.0.0.1:8000/health)...
 set TRIES=0
