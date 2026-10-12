@@ -18,20 +18,29 @@ REM Shutdown: after startup the launcher waits for the X key and then stops
 REM ONLY the processes started by this launcher invocation. Ownership is
 REM tracked two ways: (1) direct child processes of this launcher window,
 REM and (2) service processes whose command line references this project's
-REM fixed paths and that were created after this launcher started (this also
+REM derived paths (repo root, data root, SurrealDB directory) and that were
 REM covers shells that fork the script, e.g. piped stdin). Only service
 REM binary names (surreal/cmd/node/uv/python) are ever stopped, and never
 REM the launcher command lines themselves. Unrelated SurrealDB/API/Node/
 REM Python/CMD/Edge processes are never touched.
 REM
 REM Requirements: uv, Node.js/npm, existing .env, curl.exe, choice.exe.
-REM SurrealDB runs from the pinned binary below (2.6.5), matching the version
-REM that owns the external store in E:\Maintenance_Ai_Agent_Data\surrealdb.
-REM Do not substitute a different SurrealDB version: storage revisions are
-REM not readable across versions (e.g. 2.4.0 fails on this store).
+REM SurrealDB is discovered at startup (see discovery below) and must be
+REM version 2.6.x: that family owns the external store's storage revision
+REM (e.g. 2.4.0 fails on this store). The launcher validates the detected
+REM binary and refuses incompatible versions with an actionable error.
+REM
+REM Portable locations (all overridable, none hardcoded to one machine):
+REM - MAINTENANCE_DATA_ROOT: application-data root (default keeps the
+REM   established external store in E:\Maintenance_Ai_Agent_Data).
+REM - SURREALDB_EXE: exact SurrealDB executable to use. When unset, the
+REM   launcher looks for surreal.exe on PATH, then falls back to the legacy
+REM   %USERPROFILE%\Tools\surrealdb-2.6.5 layout.
+REM - SURREAL_USER / SURREAL_PASS: SurrealDB credentials (default root/root
+REM   dev default). These must match SURREAL_USER/SURREAL_PASSWORD in .env.
 REM SurrealDB credentials below must match SURREAL_USER/SURREAL_PASSWORD in
 REM .env (this deployment uses the root/root dev default). If you change the
-REM .env credentials, update the SurrealDB line below to match.
+REM .env credentials, set SURREAL_USER/SURREAL_PASS to match.
 REM
 REM Ports: SurrealDB 127.0.0.1:8000, API 127.0.0.1:5055, frontend
 REM 127.0.0.1:3000. If a port is already in use, close the owning process
@@ -40,20 +49,125 @@ REM No data is deleted, migrated manually, or overwritten by this script.
 REM API startup owns database migrations.
 REM ============================================================================
 
-REM --- fixed project locations ---
-set ROOT=E:\Project\Maintenance_Ai_Agent
-set DATA_ROOT=E:\Maintenance_Ai_Agent_Data
+REM --- project locations: ROOT anchors at this script, DATA_ROOT defaults to
+REM --- the established external store but can be relocated per machine.
+set "ROOT=%~dp0"
+if not defined MAINTENANCE_DATA_ROOT set "MAINTENANCE_DATA_ROOT=E:\Maintenance_Ai_Agent_Data"
+set "DATA_ROOT=%MAINTENANCE_DATA_ROOT%"
+if not defined SURREAL_USER set "SURREAL_USER=root"
+if not defined SURREAL_PASS set "SURREAL_PASS=root"
 
 REM --- external application-data root (API and worker read this at startup).
 REM .env is left untouched: it has a known BOM/parsing limitation under
 REM "uv run --env-file", and Windows paths are supplied here instead.
 REM NOTE: DATA_FOLDER is intentionally NOT set; open_notebook/config.py
 REM derives DATA_FOLDER from OPEN_NOTEBOOK_DATA_DIR (falls back to ./data).
-set OPEN_NOTEBOOK_DATA_DIR=%DATA_ROOT%
-set PYTHONPATH=%ROOT%
+set "OPEN_NOTEBOOK_DATA_DIR=%DATA_ROOT%"
+set "PYTHONPATH=%ROOT%"
 set EXITCODE=0
 
-cd /d %ROOT%
+cd /d "%ROOT%"
+
+REM --- preflight: fail early with actionable errors, before starting anything.
+if not exist "%ROOT%.env" (
+  echo [ERROR] Missing .env in %ROOT%
+  echo   Copy .env.example to .env (if provided) or create it, then retry.
+  exit /b 1
+)
+if not exist "%ROOT%run_api.py" (
+  echo [ERROR] Missing run_api.py in %ROOT%
+  echo   Run this launcher from a full repository checkout.
+  exit /b 1
+)
+if not exist "%DATA_ROOT%\" (
+  echo [ERROR] Application-data root not found: %DATA_ROOT%
+  echo   Create it, or set MAINTENANCE_DATA_ROOT to the existing location.
+  exit /b 1
+)
+where uv >nul 2>nul
+if errorlevel 1 (
+  echo [ERROR] 'uv' not found on PATH.
+  echo   Install uv ^(https://docs.astral.sh/uv/^) and retry.
+  exit /b 1
+)
+where node >nul 2>nul
+if errorlevel 1 (
+  echo [ERROR] 'node' not found on PATH.
+  echo   Install Node.js 22+ and retry.
+  exit /b 1
+)
+where npm >nul 2>nul
+if errorlevel 1 (
+  echo [ERROR] 'npm' not found on PATH.
+  echo   Repair the Node.js installation and retry.
+  exit /b 1
+)
+where curl.exe >nul 2>nul
+if errorlevel 1 (
+  echo [ERROR] 'curl.exe' not found on PATH.
+  echo   Use a Windows 10+ inbox installation and retry.
+  exit /b 1
+)
+
+REM --- SurrealDB discovery: explicit override, then PATH, then legacy layout.
+REM --- Never guess across versions: the binary below is validated for the
+REM --- required 2.6.x family before anything starts.
+set "SURREAL_EXE="
+if defined SURREALDB_EXE (
+  if exist "%SURREALDB_EXE%" (
+    set "SURREAL_EXE=%SURREALDB_EXE%"
+  ) else (
+    echo [ERROR] SURREALDB_EXE points to a missing file: %SURREALDB_EXE%
+    exit /b 1
+  )
+)
+if not defined SURREAL_EXE (
+  for /f "delims=" %%S in ('where surreal.exe 2^>nul') do (
+    if not defined SURREAL_EXE set "SURREAL_EXE=%%S"
+  )
+)
+if not defined SURREAL_EXE (
+  if exist "%USERPROFILE%\Tools\surrealdb-2.6.5\surreal.exe" (
+    set "SURREAL_EXE=%USERPROFILE%\Tools\surrealdb-2.6.5\surreal.exe"
+  )
+)
+if not defined SURREAL_EXE (
+  echo [ERROR] No SurrealDB executable found.
+  echo   Install SurrealDB 2.6.x and either put surreal.exe on PATH
+  echo   or set SURREALDB_EXE to its full path, then retry.
+  exit /b 1
+)
+for %%D in ("%SURREAL_EXE%\..") do set "SURREAL_DIR=%%~fD"
+echo Using SurrealDB: %SURREAL_EXE%
+
+REM --- version gate: the store revision requires the 2.6.x family.
+REM --- `surreal version` prints "<major>.<minor>.<patch> ..." on line one.
+set "SURREAL_VER="
+for /f "tokens=1" %%V in ('"%SURREAL_EXE%" version 2^>nul') do (
+  if not defined SURREAL_VER set "SURREAL_VER=%%V"
+)
+set "SURREAL_MAJOR="
+set "SURREAL_MINOR="
+for /f "tokens=1,2 delims=." %%A in ("%SURREAL_VER%") do (
+  set "SURREAL_MAJOR=%%A"
+  set "SURREAL_MINOR=%%B"
+)
+if "%SURREAL_MAJOR%.%SURREAL_MINOR%"=="2.6" (
+  echo SurrealDB version %SURREAL_VER% accepted ^(requires 2.6.x^).
+) else (
+  if "%SURREAL_MAJOR%"=="" (
+    echo [WARN] Could not parse SurrealDB version output; continuing.
+    echo   If startup fails, set SURREALDB_EXE to a 2.6.x binary and retry.
+  ) else (
+    echo [ERROR] Incompatible SurrealDB version: %SURREAL_VER% ^(requires 2.6.x^).
+    if exist "%USERPROFILE%\Tools\surrealdb-2.6.5\surreal.exe" (
+      echo   A 2.6.x binary exists at %USERPROFILE%\Tools\surrealdb-2.6.5\surreal.exe
+      echo   Set SURREALDB_EXE to that full path to use it.
+    )
+    echo   Install SurrealDB 2.6.x or point SURREALDB_EXE at one, then retry.
+    exit /b 1
+  )
+)
 
 REM --- process ownership: record this launcher window's PID and start time.
 REM --- Shutdown stops (1) direct children of this PID with service names and
@@ -75,7 +189,7 @@ echo ==========================================
 echo [1/4] Starting SurrealDB...
 echo ==========================================
 
-start "SurrealDB" "%USERPROFILE%\Tools\surrealdb-2.6.5\surreal.exe" start --user root --pass root --bind 127.0.0.1:8000 "rocksdb:%DATA_ROOT%\surrealdb"
+start "SurrealDB" "%SURREAL_EXE%" start --user "%SURREAL_USER%" --pass "%SURREAL_PASS%" --bind 127.0.0.1:8000 "rocksdb:%DATA_ROOT%\surrealdb"
 
 echo Waiting for SurrealDB readiness (http://127.0.0.1:8000/health)...
 set TRIES=0
@@ -153,10 +267,10 @@ echo   SurrealDB - READY (127.0.0.1:8000)
 echo   API       - READY (127.0.0.1:5055 /health)
 echo   Worker    - RUNNING (surreal_commands.cli.worker)
 echo   Frontend  - READY (127.0.0.1:3000)
-echo  Open the app at: http://127.0.0.1:3000
+echo  Open the app at: http://localhost:3000
 echo ==========================================
 
-start "" "http://127.0.0.1:3000"
+start "" "http://localhost:3000"
 echo Browser opened after all services reported ready (%TIME%).
 echo.
 choice /c X /n /m "Press X to stop all Maintenance Notebook services and exit: "
@@ -196,7 +310,7 @@ echo.
 echo Stopping services started by this launcher invocation ...
 echo (Only owned surreal/cmd/node/uv/python processes are stopped.
 echo  Pre-existing or unrelated processes are never touched.)
-powershell -NoProfile -Command "$lp=$env:LAUNCHER_PID; $t0=$env:LAUNCH_START; $roots=@('E:\Project\Maintenance_Ai_Agent','E:\Maintenance_Ai_Agent_Data','surrealdb-2.6.5'); $names='^(surreal\.exe|cmd\.exe|node\.exe|uv\.exe|python\.exe)$'; $done=@{}; foreach ($p in (Get-CimInstance Win32_Process)) { if ($p.ProcessId -eq $lp) { continue }; if ($p.Name -notmatch $names) { continue }; if ($p.CommandLine -like '*Start-Maintenance-NoteBook.bat*') { continue }; $owned = ($p.ParentProcessId -eq $lp); if ((-not $owned) -and ($p.CreationDate.ToString('yyyyMMddHHmmss') -ge $t0)) { foreach ($r in $roots) { if ($p.CommandLine -like ('*'+$r+'*')) { $owned=$true; break } } }; if ($owned -and (-not $done.ContainsKey($p.ProcessId))) { $done[$p.ProcessId]=$true; Write-Output ('Stopping ' + $p.Name + ' PID ' + $p.ProcessId); & taskkill /PID $p.ProcessId /T /F } }"
+powershell -NoProfile -Command "$lp=$env:LAUNCHER_PID; $t0=$env:LAUNCH_START; $roots=@($env:ROOT,$env:DATA_ROOT,$env:SURREAL_DIR); $names='^(surreal\.exe|cmd\.exe|node\.exe|uv\.exe|python\.exe)$'; $done=@{}; foreach ($p in (Get-CimInstance Win32_Process)) { if ($p.ProcessId -eq $lp) { continue }; if ($p.Name -notmatch $names) { continue }; if ($p.CommandLine -like '*Start-Maintenance-NoteBook.bat*') { continue }; $owned = ($p.ParentProcessId -eq $lp); if ((-not $owned) -and ($p.CreationDate.ToString('yyyyMMddHHmmss') -ge $t0)) { foreach ($r in $roots) { if ($p.CommandLine -like ('*'+$r+'*')) { $owned=$true; break } } }; if ($owned -and (-not $done.ContainsKey($p.ProcessId))) { $done[$p.ProcessId]=$true; Write-Output ('Stopping ' + $p.Name + ' PID ' + $p.ProcessId); & taskkill /PID $p.ProcessId /T /F } }"
 echo.
 echo Verifying ports are released...
 set TRIES=0
