@@ -2,7 +2,6 @@
 
 import { AppShell } from '@/components/layout/AppShell'
 import { RebuildEmbeddings } from './components/RebuildEmbeddings'
-import { SystemInfo } from './components/SystemInfo'
 import { useTranslation } from '@/lib/hooks/use-translation'
 
 export default function AdvancedPage() {
@@ -19,7 +18,6 @@ export default function AdvancedPage() {
               </p>
             </div>
 
-            <SystemInfo />
             <RebuildEmbeddings />
           </div>
         </div>

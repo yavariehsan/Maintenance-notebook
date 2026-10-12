@@ -123,8 +123,6 @@ async function fetchConfig(): Promise<AppConfig> {
         apiUrl: baseUrl, // Use baseUrl from runtime-config (Python no longer returns this)
         version: data.version || 'unknown',
         buildTime: BUILD_TIME,
-        latestVersion: data.latestVersion || null,
-        hasUpdate: data.hasUpdate || false,
         dbStatus: data.dbStatus, // Can be undefined for old backends
       }
       if (isDev) console.log('✅ [Config] Successfully loaded API config:', config)

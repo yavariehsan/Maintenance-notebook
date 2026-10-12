@@ -42,7 +42,7 @@ class TestConfigEndpointDoesNotLeakDbErrors:
         assert SENSITIVE_MESSAGE not in response.text
         assert "error" not in body
         assert body["dbStatus"] == "offline"
-        assert set(body.keys()) == {"version", "latestVersion", "hasUpdate", "dbStatus"}
+        assert set(body.keys()) == {"version", "dbStatus"}
 
     def test_db_timeout_does_not_include_raw_error_in_response(self, client):
         import asyncio

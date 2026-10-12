@@ -1053,18 +1053,8 @@ export const fa = {
   advanced: {
     title: "ابزارهای پیشرفته",
     desc: "ابزارها و امکانات پیشرفته برای کاربران حرفه‌ای",
-    systemInfo: "اطلاعات سیستم",
     rebuildEmbeddings: "بازسازی امبدینگ‌ها",
     rebuildEmbeddingsDesc: "بازسازی نمایه جستجوی برداری برای همه منابع",
-    currentVersion: "نسخه فعلی",
-    latestVersion: "آخرین نسخه",
-    status: "وضعیت",
-    updateAvailable: "نسخه {{version}} در دسترس است",
-    updateAvailableDesc: "نسخه جدیدی از Maintenance AI Agent در دسترس است.",
-    upToDate: "به‌روز",
-    unknown: "نامشخص",
-    viewOnGithub: "مشاهده در GitHub",
-    updateCheckFailed: "بررسی به‌روزرسانی ممکن نیست. ممکن است GitHub در دسترس نباشد.",
     rebuild: {
       mode: "حالت بازسازی",
       existing: "موجود",

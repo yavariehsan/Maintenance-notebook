@@ -1048,18 +1048,8 @@ export const en = {
   advanced: {
     title: "AdvancedTools",
     desc: "Advanced tools and utilities for power users",
-    systemInfo: "System Info",
     rebuildEmbeddings: "Rebuild Embeddings",
     rebuildEmbeddingsDesc: "Rebuild vector search index for all sources",
-    currentVersion: "Current Version",
-    latestVersion: "Latest Version",
-    status: "Status",
-    updateAvailable: "Version {{version}} Available",
-    updateAvailableDesc: "A new version of Maintenance AI Agent is available.",
-    upToDate: "Up to Date",
-    unknown: "Unknown",
-    viewOnGithub: "View on GitHub",
-    updateCheckFailed: "Unable to check for updates. GitHub may be unreachable.",
     rebuild: {
       mode: "Rebuild Mode",
       existing: "Existing",
